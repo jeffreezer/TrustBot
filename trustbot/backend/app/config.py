@@ -62,6 +62,17 @@ class Settings(BaseSettings):
     #   "api"   – OpenAI-compatible /v1/embeddings (uses MODEL_BASE_URL + MODEL_API_KEY)
     embedding_provider: str = "local"
 
+    # Reranker backend selected by the provider abstraction (Phase 3):
+    #   "local" – ms-marco-MiniLM cross-encoder on CPU (default; baked into the image)
+    #   "hash"  – deterministic lexical-overlap fake (test suite / offline CI)
+    #   "none"  – passthrough; keep the fused order (no second-pass model)
+    reranker_provider: str = "local"
+
+    # Hybrid retrieval (Phase 3). candidate_k is pulled from *each* of vector and
+    # keyword search before fusion; top_k is the count returned after reranking.
+    retrieval_candidate_k: int = 20
+    retrieval_top_k: int = 5
+
     # Character-based chunking (token-free so tests need no tokenizer/model).
     # Overlap preserves context across chunk boundaries.
     chunk_size: int = 1200
@@ -123,6 +134,13 @@ class Settings(BaseSettings):
             raise ValueError("CHUNK_SIZE must be positive.")
         if not 0 <= self.chunk_overlap < self.chunk_size:
             raise ValueError("CHUNK_OVERLAP must be >= 0 and < CHUNK_SIZE.")
+
+        if self.retrieval_candidate_k <= 0:
+            raise ValueError("RETRIEVAL_CANDIDATE_K must be positive.")
+        if not 0 < self.retrieval_top_k <= self.retrieval_candidate_k:
+            raise ValueError(
+                "RETRIEVAL_TOP_K must be > 0 and <= RETRIEVAL_CANDIDATE_K."
+            )
 
         return self
 

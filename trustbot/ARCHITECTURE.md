@@ -2,8 +2,8 @@
 
 A running log of notable, non-obvious decisions — the *why* behind the code, so
 future changes don't relitigate settled tradeoffs. Newest sections may be added
-as later phases land. Scope to date: **Milestone 1, Phases 1–2 (data layer +
-evidence ingestion).**
+as later phases land. Scope to date: **Milestone 1, Phases 1–3 (data layer +
+evidence ingestion + hybrid retrieval).**
 
 ## Guiding constraints
 
@@ -133,12 +133,28 @@ multi-GB CUDA build) and pre-downloads BGE-M3 during `docker compose up --build`
 running container then has **no network dependency and no first-request download** —
 heavier build, predictable runtime. CPU inference is acceptable at demo scale.
 
-### Character-based chunking (not token-based)
-`chunk_text()` uses fixed-size character windows with overlap (`CHUNK_SIZE` /
-`CHUNK_OVERLAP`). Char windows keep chunking **tokenizer-free**, so tests and CI need
-no model. It's deterministic — same text + params → same chunks — which is what makes
-re-ingestion idempotent and unit-testable. Token-aware chunking can replace this later
-behind the same function signature if retrieval quality needs it.
+### Structure-aware chunking, with a character-window floor
+`chunk_document()` (in `ingestion/structure.py`) is the primary path: for Markdown it
+splits on section headings so each section becomes one topically coherent chunk
+(the document's H1 title is prepended as lightweight context). Two fallbacks make it
+**never worse** than the old window chunker: a section larger than `CHUNK_SIZE` is
+window-chunked, and a document with no usable heading structure (tables, the
+questionnaire-derived answers, future PDFs) is window-chunked whole. The underlying
+`chunk_text()` floor is still fixed-size character windows with overlap (`CHUNK_SIZE` /
+`CHUNK_OVERLAP`) — tokenizer-free, so tests and CI need no model, and deterministic, so
+re-ingestion stays idempotent and unit-testable.
+
+This was a real retrieval fix, not a refactor: a fixed 1,200-char window over a policy
+was dominated by ~430 chars of leading boilerplate (title block, disclaimer, the `>`
+metadata blockquote), so the chunk holding the four data-classification tiers reranked
+*dead last*. `extract_front_matter()` now routes that leading blockquote — the
+disclaimer and `**Key:** value` lines (Owner, Version, Classification, Related controls)
+— into the chunk's `meta['front_matter']` instead of embedding it as body text, while
+keeping the `#` title and `##` headings (useful retrieval signal). It keys on Markdown
+structure, never on specific wording, so real customer policies with the same header
+shape work the same way. Document text is parsed and sliced only — **data, never
+instructions** — and the parsing regexes are segment-bounded (no catastrophic
+backtracking).
 
 ### Ingestion is idempotent and tenant-scoped
 `ingest_document()` validates size at the boundary (`MAX_INGEST_BYTES`), requires an
@@ -154,13 +170,18 @@ unsupported binary types at this boundary** rather than mishandling them. Each c
 `meta` carries `confidentiality` / `customer_shareable` copied from the source so Phase
 3 retrieval and Phase 4 answer validation can filter without re-joining evidence.
 
-### One knowledge base over four source types
+### One knowledge base over five source types
 The corpus is embedded into a single `knowledge_chunks` table, each chunk tagged with a
 distinct `source_type` so Phase 3 can retrieve across — and weight — them:
 - **`company_profile`** — canonical company facts (internal).
 - **`evidence`** — uploaded attestation documents, carrying their own
   confidentiality / shareable flags (e.g. SOC 2 = confidential-but-shareable, the
   whitepaper = public).
+- **`policy`** — governed policy documents. Stored as `evidence` rows
+  (`evidence_type='policy'`) so they are linkable to controls via
+  `evidence_control_links`, but their chunks are tagged `source_type='policy'` to stay
+  distinct in retrieval. Confidentiality / shareability is read from each file's
+  `Classification:` header, never a hardcoded table.
 - **`control`** — control implementation statements. Embedded as `code + title +
   statement`, tagged **internal, not customer-shareable**: a control statement *informs*
   a drafted answer, but the drafted answer is what goes external, never the raw statement.
@@ -171,6 +192,60 @@ distinct `source_type` so Phase 3 can retrieve across — and weight — them:
   an authoritative bypass (see the data-layer note above). Going through structured
   `ingest_text()` (not the document parser) keeps these rows off the file path while
   sharing the same chunk → embed → idempotent-upsert core.
+
+---
+
+## Retrieval (Phase 3)
+
+### Hybrid: vector + keyword, fused by rank — not by score
+Cosine distance (pgvector) and full-text rank (`ts_rank_cd`) live on different,
+incomparable scales, so the two ranked lists are merged with **Reciprocal Rank
+Fusion** (`1/(k+rank)`, `k=60`) rather than by blending raw scores. RRF is
+parameter-light, robust to scale differences, and lets each retriever contribute its
+ordering without one swamping the other. The fusion step (`retrieval/fusion.py`) is
+pure and DB-free, so it's unit-tested directly. Vector search alone misses exact-term
+matches (control codes, acronyms); keyword search alone misses paraphrases — together
+they cover both.
+
+### Keyword search is parameterized Postgres FTS — no injection surface
+`keyword_search` builds `to_tsvector('english', chunk_text) @@ plainto_tsquery('english', :q)`
+with the question passed as a **bound parameter**, never string-concatenated, so a
+hostile question can't inject SQL (CLAUDE.md). A GIN index on the *same*
+`to_tsvector('english', chunk_text)` expression (migration `0003`) keeps it fast; the
+`'english'` config must match on both sides or the planner ignores the index.
+
+### Exact vector search (no ANN index) at demo scale
+Cosine search runs without an IVFFlat/HNSW index — at a few hundred chunks an exact
+scan is fast and avoids the recall/tuning tradeoffs of an approximate index. An ANN
+index is a drop-in later (larger corpus) behind the same query.
+
+### Reranker is the only new vendor code — same provider abstraction
+`ms-marco-MiniLM` (CPU cross-encoder) re-scores the fused candidates so the genuinely
+best evidence rises to the top. Like embeddings, it lives **only** in `app/providers/`
+behind a `RerankProvider` contract, selected by `RERANKER_PROVIDER`:
+- **`local`** (default) — the cross-encoder, baked into the image at build time.
+- **`hash`** — a deterministic *lexical-overlap* fake. Unlike a pure hash it yields
+  meaningful ordering (most query-term overlap wins), so retrieval ordering is
+  unit-testable offline without the model.
+- **`none`** — a passthrough that returns equal scores; the stable sort then preserves
+  the fused order exactly (isolate/disable the reranker).
+The pipeline scores once and sorts itself (ties broken by fusion score) so the debug
+endpoint can surface both `fusion_score` and `rerank_score` for tuning.
+
+### Filters are the tenancy + shareability gate, applied on every query
+`RetrievalFilters` carries a **required** `org_id` plus optional `source_types`,
+`confidentiality`, and `customer_shareable`. A shared `_base_stmt` applies them to
+*both* retrievers, so org-scoping (CLAUDE.md: "on every query") can't be forgotten on
+one path. `customer_shareable=True` is the exact filter Phase 4 will use to keep
+internal-only material out of customer-facing answers — the security guarantee is
+enforced at retrieval, not bolted on afterward.
+
+### A fixed pipeline, before any agentic loop
+`retrieve()` is a deliberately fixed embed → search → fuse → rerank → top-k pipeline
+(CLAUDE.md: "fixed retrieve-then-answer pipeline before the agentic loop"). It returns
+`RetrievedChunk`s for Phase 4 to draft and validate against. `POST /retrieve` exposes
+it for tuning/demos and is **gated to non-production** (it returns chunk text) with a
+bounded, validated request body.
 
 ---
 
@@ -188,8 +263,11 @@ distinct `source_type` so Phase 3 can retrieve across — and weight — them:
 
 ## Deferred to later phases (explicitly not built yet)
 
-- **Reranker** access through the same provider abstraction (Phase 3).
-- The **fixed retrieve-then-answer pipeline before** any agentic loop.
+- **Answer generation** (Phase 4): structured/validated answers from retrieved chunks,
+  with the `unknown / needs-human-review` fallback when evidence is absent.
 - Model-output validation (cited evidence exists and is org-owned; no certification
   claimed without support; no internal-only content in customer-facing answers).
+- The **agentic retrieval loop** (Phase 6) — a `search_knowledge_base` tool the model
+  drives itself. The fixed retrieve pipeline (above) lands first, by design.
+- An **ANN vector index** (IVFFlat/HNSW) — unneeded at demo scale; exact search now.
 - Authn/z and org-scoping on API routes (this endpoint set is a single-tenant demo).

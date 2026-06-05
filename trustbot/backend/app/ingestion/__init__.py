@@ -4,9 +4,13 @@ from __future__ import annotations
 from .chunk import chunk_text
 from .parse import ParseError, UnsupportedDocumentError, parse_document
 from .pipeline import IngestionError, build_chunk_rows, ingest_document, ingest_text
+from .structure import chunk_document, extract_front_matter, split_sections
 
 __all__ = [
     "chunk_text",
+    "chunk_document",
+    "extract_front_matter",
+    "split_sections",
     "parse_document",
     "ParseError",
     "UnsupportedDocumentError",

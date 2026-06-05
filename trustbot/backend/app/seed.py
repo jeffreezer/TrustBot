@@ -3,12 +3,12 @@
 Loads, into one demo org:
   - company_profile  (raw markdown + a structured projection of canonical facts)
   - controls         (control_catalog.csv, preserving framework mappings / notes)
-  - evidence         (each evidence file, uploaded through the storage adapter,
-                      with a sha256 recorded for the audit trail)
-  - evidence_control_links (framework-based associations)
+  - evidence         (each evidence file + each policy doc, uploaded through the
+                      storage adapter, with a sha256 recorded for the audit trail)
+  - evidence_control_links (framework-based associations + per-policy header links)
   - approved_answer_library (Northwind's completed CAIQ + Security Questionnaire)
-  - knowledge_chunks  (company profile + each evidence file, parsed → chunked →
-                       embedded through the provider abstraction — Phase 2)
+  - knowledge_chunks  (company profile + evidence + policies + controls + approved
+                       answers, parsed → chunked → embedded — Phases 2–3)
 
 Idempotent: if the org already exists it is skipped, unless ``force=True`` (which
 deletes and recreates it). Safe to run on every container start.
@@ -24,6 +24,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import mimetypes
+import re
 from datetime import date
 from pathlib import Path
 
@@ -84,6 +85,72 @@ def _parse_date(value: str | None) -> date | None:
         return date.fromisoformat(value.strip())
     except ValueError:
         return None
+
+
+# Policy header parsing. Policies declare their own classification and the controls
+# they support in a blockquote header (e.g. "> **Classification:** Public ...",
+# "> **Related controls:** CC6.1, CC6.2, IAM (catalog)"). We derive confidentiality /
+# shareability and the control links from those lines rather than a hardcoded table,
+# so dropping a new policy file into the directory just works.
+_HEADER_RE = {
+    "classification": re.compile(r"\*{0,2}Classification:\*{0,2}\s*(.+)", re.IGNORECASE),
+    "related": re.compile(r"\*{0,2}Related controls:\*{0,2}\s*(.+)", re.IGNORECASE),
+}
+
+
+def _classify_policy(classification: str) -> tuple[str, bool]:
+    """Map a Classification header to (confidentiality, customer_shareable).
+
+    Shareability is driven by the words in the header, never per-file rules:
+      - "Public ..."                          -> public, shareable
+      - "Internal — customer-shareable ..."   -> confidential, shareable
+      - "Internal" (anything else)            -> internal, not shareable
+    """
+    value = classification.lower()
+    if "public" in value:
+        return "public", True
+    if "customer-shareable" in value:
+        return "confidential", True
+    return "internal", False
+
+
+def _parse_related_controls(value: str) -> list[str]:
+    """Comma-separated control codes from a Related controls header.
+
+    Trailing parentheticals like "IAM (catalog)" name a control *family*, not a code;
+    we strip the "(...)" so the token becomes "IAM" and simply won't match a real
+    control_code (the linker skips it). Order-preserving, de-duplicated.
+    """
+    codes: list[str] = []
+    for token in value.split(","):
+        token = re.sub(r"\s*\(.*?\)\s*$", "", token.strip()).strip()
+        if token and token not in codes:
+            codes.append(token)
+    return codes
+
+
+def _extract_policy_header(text: str) -> tuple[str, list[str]]:
+    """Return (classification, related_control_codes) parsed from a policy's header."""
+    classification = ""
+    related: list[str] = []
+    for line in text.splitlines():
+        stripped = line.lstrip("> ").strip()
+        if not classification and (m := _HEADER_RE["classification"].match(stripped)):
+            classification = m.group(1).strip()
+        if not related and (m := _HEADER_RE["related"].match(stripped)):
+            related = _parse_related_controls(m.group(1))
+        if classification and related:
+            break
+    return classification, related
+
+
+def _extract_title(text: str, fallback: str) -> str:
+    """The document's H1 (e.g. '# Northwind AI — Access Control Policy'), else fallback."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            return stripped[2:].strip()
+    return fallback
 
 
 def _seed_dir() -> Path:
@@ -204,6 +271,79 @@ def _seed_evidence_links(
     return links
 
 
+def _seed_policies(
+    session: Session, org: Organization, seed_dir: Path
+) -> list[tuple[Evidence, bytes, list[str]]]:
+    """Load policies/*.md as Evidence rows (evidence_type='policy').
+
+    Policies are governed documents that attest to controls, so they are stored as
+    evidence (and become linkable via evidence_control_links). Their chunks are tagged
+    source_type='policy' (see _seed_knowledge_chunks) so retrieval keeps them distinct.
+    Classification / shareability is read from each file's header, not hardcoded.
+
+    Returns (evidence, bytes, related_control_codes) so the caller can link + ingest.
+    """
+    policies_dir = seed_dir / "policies"
+    created: list[tuple[Evidence, bytes, list[str]]] = []
+    if not policies_dir.is_dir():
+        return created
+
+    storage = get_storage()
+    storage.ensure_bucket()
+    for file_path in sorted(policies_dir.glob("*.md")):
+        data = file_path.read_bytes()
+        text = data.decode("utf-8")
+        classification, related_codes = _extract_policy_header(text)
+        confidentiality, shareable = _classify_policy(classification)
+        ev = Evidence(
+            org_id=org.id,
+            title=_extract_title(text, file_path.stem.replace("_", " ")),
+            evidence_type="policy",
+            original_filename=file_path.name,
+            storage_path="",  # set after we know the evidence id
+            content_type=mimetypes.guess_type(file_path.name)[0] or "text/markdown",
+            file_hash=_sha256(data),
+            file_size=len(data),
+            owner="GRC",
+            confidentiality=confidentiality,
+            customer_shareable=shareable,
+            status="active",
+        )
+        session.add(ev)
+        session.flush()  # assign ev.id
+        key = f"org/{org.id}/evidence/{ev.id}/{sanitize_filename(file_path.name)}"
+        ev.storage_path = storage.put(key, data, content_type=ev.content_type)
+        created.append((ev, data, related_codes))
+    return created
+
+
+def _seed_policy_links(
+    session: Session,
+    org: Organization,
+    policies: list[tuple[Evidence, bytes, list[str]]],
+) -> int:
+    """Link each policy to the controls named in its Related controls header.
+
+    Codes that don't match an existing control (e.g. family references like 'IAM')
+    are skipped — the policy still ingests; it just isn't linked to a non-existent row.
+    """
+    controls = session.scalars(select(Control).where(Control.org_id == org.id)).all()
+    by_code = {c.control_code: c for c in controls}
+    links = 0
+    for ev, _data, codes in policies:
+        for code in codes:
+            control = by_code.get(code)
+            if control is None:
+                continue
+            session.add(
+                EvidenceControlLink(
+                    org_id=org.id, evidence_id=ev.id, control_id=control.id
+                )
+            )
+            links += 1
+    return links
+
+
 def _control_text(control: Control) -> str:
     """Retrieval text for a control: its code/title plus the implementation statement."""
     parts = [f"{control.control_code} {control.title}".strip()]
@@ -232,6 +372,7 @@ def _seed_knowledge_chunks(
     evidence: list[tuple[Evidence, bytes]],
     controls: list[Control],
     approved: list[ApprovedAnswer],
+    policies: list[tuple[Evidence, bytes, list[str]]],
 ) -> int:
     """Parse → chunk → embed the full corpus into knowledge_chunks.
 
@@ -239,6 +380,7 @@ def _seed_knowledge_chunks(
     search across (and weight) them and approved-answer reuse is distinguishable:
       - ``company_profile`` — the canonical company facts (internal)
       - ``evidence``        — uploaded attestation documents
+      - ``policy``          — governed policy documents (header-declared shareability)
       - ``control``         — control implementation statements (internal)
       - ``approved_answer`` — prior approved Q&A, retrievable reuse *candidates*
 
@@ -270,6 +412,23 @@ def _seed_knowledge_chunks(
             meta={
                 "title": ev.title,
                 "evidence_type": ev.evidence_type,
+                "confidentiality": ev.confidentiality,
+                "customer_shareable": ev.customer_shareable,
+            },
+            provider=provider,
+        )
+    for ev, data, _codes in policies:
+        total += ingest_document(
+            session,
+            org_id=org.id,
+            source_type="policy",
+            source_id=ev.id,
+            data=data,
+            content_type=ev.content_type,
+            filename=ev.original_filename,
+            meta={
+                "title": ev.title,
+                "evidence_type": "policy",
                 "confidentiality": ev.confidentiality,
                 "customer_shareable": ev.customer_shareable,
             },
@@ -420,15 +579,18 @@ def seed(session: Session, *, force: bool = False) -> dict:
     profile = _seed_company_profile(session, org, seed_dir)
     controls = _seed_controls(session, org, seed_dir)
     evidence = _seed_evidence(session, org, seed_dir)
+    policies = _seed_policies(session, org, seed_dir)
     link_count = _seed_evidence_links(session, org, [ev for ev, _ in evidence])
+    link_count += _seed_policy_links(session, org, policies)
     approved = _seed_approved_answers(session, org, seed_dir)
     chunk_count = _seed_knowledge_chunks(
-        session, org, profile, evidence, controls, approved
+        session, org, profile, evidence, controls, approved, policies
     )
 
     counts = {
         "controls": len(controls),
         "evidence": len(evidence),
+        "policies": len(policies),
         "evidence_control_links": link_count,
         "approved_answers": len(approved),
         "knowledge_chunks": chunk_count,

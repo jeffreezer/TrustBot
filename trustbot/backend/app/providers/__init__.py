@@ -10,6 +10,7 @@ from functools import lru_cache
 
 from ..config import settings
 from .base import EmbeddingProvider, ProviderError
+from .rerank_base import RerankProvider
 
 
 @lru_cache(maxsize=1)
@@ -32,4 +33,28 @@ def get_embedding_provider() -> EmbeddingProvider:
     raise ProviderError(f"unknown EMBEDDING_PROVIDER: {settings.embedding_provider!r}")
 
 
-__all__ = ["EmbeddingProvider", "ProviderError", "get_embedding_provider"]
+@lru_cache(maxsize=1)
+def get_rerank_provider() -> RerankProvider:
+    choice = settings.reranker_provider.strip().lower()
+    if choice == "local":
+        from .local_cross_encoder import LocalCrossEncoderRerankProvider
+
+        return LocalCrossEncoderRerankProvider(settings.reranker_model)
+    if choice == "hash":
+        from .lexical_reranker import LexicalRerankProvider
+
+        return LexicalRerankProvider()
+    if choice == "none":
+        from .passthrough_reranker import PassthroughRerankProvider
+
+        return PassthroughRerankProvider()
+    raise ProviderError(f"unknown RERANKER_PROVIDER: {settings.reranker_provider!r}")
+
+
+__all__ = [
+    "EmbeddingProvider",
+    "RerankProvider",
+    "ProviderError",
+    "get_embedding_provider",
+    "get_rerank_provider",
+]

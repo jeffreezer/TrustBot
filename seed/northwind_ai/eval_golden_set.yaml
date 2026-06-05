@@ -32,6 +32,15 @@ cases:
     expected_evidence: [P3.2, DSP-05.1, Security_Whitepaper]
     notes: Not by default; opt-in only. Correct answer is "no, not by default."
 
+  - id: NW-005
+    question: "What are your data classification levels?"
+    expected_outcome: supported_yes
+    expected_evidence: [Data_Classification_and_Handling_Policy, C1.1]
+    notes: >
+      Must list the four tiers — Public, Internal, Confidential, Restricted — from the
+      Data Classification & Handling Policy (§3). Regression guard for structure-aware
+      chunking: the tiers section must surface, not the policy's front-matter block.
+
   # --- Honest negatives (T1, T2) ---
   - id: NW-010
     question: "Do you support customer-managed encryption keys (CMEK/BYOK)?"

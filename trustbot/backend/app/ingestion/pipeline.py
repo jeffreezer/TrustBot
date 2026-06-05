@@ -23,8 +23,8 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..db.models import KnowledgeChunk
 from ..providers import EmbeddingProvider, get_embedding_provider
-from .chunk import chunk_text
 from .parse import parse_document
+from .structure import chunk_document, extract_front_matter
 
 
 class IngestionError(Exception):
@@ -42,16 +42,26 @@ def build_chunk_rows(
     size: int | None = None,
     overlap: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Chunk + embed text into KnowledgeChunk-shaped dicts. No DB access."""
+    """Chunk + embed text into KnowledgeChunk-shaped dicts. No DB access.
+
+    Leading front-matter (a document's title block / disclaimer / ``> metadata``) is
+    routed to ``meta['front_matter']`` instead of being embedded as body text, and the
+    body is split heading-aware (see structure.py) so each chunk stays topically tight.
+    Both steps no-op on non-Markdown text (controls, approved answers), which falls
+    through to plain window chunking unchanged.
+    """
     size = settings.chunk_size if size is None else size
     overlap = settings.chunk_overlap if overlap is None else overlap
 
-    pieces = chunk_text(text, size=size, overlap=overlap)
+    body, front_matter = extract_front_matter(text)
+    pieces = chunk_document(body, size=size, overlap=overlap)
     if not pieces:
         return []
 
     embeddings = provider.embed_documents(pieces)
     base_meta = dict(meta or {})
+    if front_matter:
+        base_meta.setdefault("front_matter", front_matter)
     return [
         {
             "org_id": org_id,

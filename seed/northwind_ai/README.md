@@ -18,6 +18,8 @@ seed/northwind_ai/
 │   ├── PCI_DSS_AOC_ServiceProvider.md
 │   ├── ISO27001_Certificate_and_SoA.md
 │   └── Security_Whitepaper.md
+├── policies/                         <- 16 synthetic security policies (the most common questionnaire answer source)
+│   ├── 01_Information_Security_Policy.md  ... 16_Privacy_and_Data_Protection_Policy.md
 └── questionnaires/
     ├── CAIQ_v4_Northwind_AI.xlsx              <- completed CAIQ, full 261 questions (CSA CAIQ v4 framework, attributed)
     └── Security_Questionnaire_Northwind_AI.xlsx <- original general security questionnaire, 108 Qs across 18 domains

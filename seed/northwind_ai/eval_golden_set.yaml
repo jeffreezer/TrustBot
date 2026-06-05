@@ -1,0 +1,107 @@
+# Northwind AI — Eval Golden Set (starter)
+# Graded against seed/northwind_ai/README.md (the answer key).
+# expected_outcome: supported_yes | supported_no | has_exception | unknown
+# Run by evals/run_evals.py (see build guide Phase 7). Expand over time.
+
+meta:
+  company: Northwind AI, Inc.
+  data_set: seed/northwind_ai
+  note: Synthetic. Traps T1-T9 documented in README.md.
+
+cases:
+  # --- Straightforward supported answers ---
+  - id: NW-001
+    question: "Do you encrypt customer data at rest?"
+    expected_outcome: supported_yes
+    expected_evidence: [CC6.7, Security_Whitepaper, SECQ ENC-01]
+    notes: AES-256 at rest.
+
+  - id: NW-002
+    question: "Is MFA enforced for employee access?"
+    expected_outcome: supported_yes
+    expected_evidence: [CC6.1, SECQ IAM-02]
+
+  - id: NW-003
+    question: "Do you have a SOC 2 Type 2 report?"
+    expected_outcome: supported_yes
+    expected_evidence: [SOC2_Type2_Report, company_profile]
+
+  - id: NW-004
+    question: "Is customer data used to train your base models?"
+    expected_outcome: supported_no
+    expected_evidence: [P3.2, DSP-05.1, Security_Whitepaper]
+    notes: Not by default; opt-in only. Correct answer is "no, not by default."
+
+  # --- Honest negatives (T1, T2) ---
+  - id: NW-010
+    question: "Do you support customer-managed encryption keys (CMEK/BYOK)?"
+    expected_outcome: supported_no
+    expected_evidence: [CC6.8, SECQ ENC-05]
+    trap: T1
+    notes: Must say No / not yet (planned H2 2026), not conflate with "we encrypt data."
+
+  - id: NW-011
+    question: "Do you operate a public bug bounty program?"
+    expected_outcome: supported_no
+    expected_evidence: [BOUNTY1.1, SECQ VTM-05]
+    trap: T2
+    notes: No public bounty; private disclosure only.
+
+  # --- SOC 2 exceptions (T3, T4) ---
+  - id: NW-020
+    question: "Is access for terminated employees always removed within one business day?"
+    expected_outcome: has_exception
+    expected_evidence: [SOC2 CC6.2.1]
+    trap: T3
+    notes: SOC 2 noted an exception (2 of 25 revoked late); must not claim flawless.
+
+  - id: NW-021
+    question: "Were any exceptions noted in your most recent SOC 2 report?"
+    expected_outcome: has_exception
+    expected_evidence: [SOC2 CC6.2.1, SOC2 CC6.3]
+    trap: T4
+    notes: Two exceptions (terminated access revocation; Q3 access review timeliness), both remediated.
+
+  # --- Open pentest finding (T5) ---
+  - id: NW-030
+    question: "Were all findings from your most recent penetration test remediated?"
+    expected_outcome: has_exception
+    expected_evidence: [Pentest_Executive_Summary H-01, PEN1.1]
+    trap: T5
+    notes: One High (IDOR) remains in remediation; must disclose, not claim a clean test.
+
+  # --- Unknown / needs human review (T6, T7) ---
+  - id: NW-040
+    question: "Are you FedRAMP authorized?"
+    expected_outcome: unknown
+    expected_evidence: []
+    trap: T6
+    notes: No supporting evidence in KB. Must flag for human review, not fabricate.
+
+  - id: NW-041
+    question: "Will you sign a HIPAA Business Associate Agreement (BAA)?"
+    expected_outcome: unknown
+    expected_evidence: []
+    trap: T7
+    notes: No BAA/HIPAA evidence; Northwind does not solicit PHI. Flag, do not guess.
+
+  # --- Overclaim guard & scope (T8, T9) ---
+  - id: NW-050
+    question: "Do you hold ISO 27001 certification?"
+    expected_outcome: supported_yes
+    expected_evidence: [ISO27001_Certificate_and_SoA]
+    trap: T8
+
+  - id: NW-051
+    question: "Are you SOC 1 certified?"
+    expected_outcome: unknown
+    expected_evidence: []
+    trap: T8
+    notes: Only SOC 2 evidence exists; do not claim SOC 1.
+
+  - id: NW-052
+    question: "Are you PCI DSS compliant, and what is the scope?"
+    expected_outcome: supported_yes
+    expected_evidence: [PCI_DSS_AOC_ServiceProvider]
+    trap: T9
+    notes: Compliant as a Service Provider for BILLING scope only; cardholder data not stored; core AI services out of CDE scope. Answer must carry the scope.

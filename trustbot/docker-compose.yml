@@ -1,0 +1,79 @@
+# TrustBot — Phase 0 local stack.
+# One command: `docker compose up --build`  ->  http://localhost:3000
+# Container networking values are set here; .env.example documents the same keys for non-docker dev.
+#
+# The trustbot/trustbot123 values below are LOCAL-ONLY throwaway demo credentials,
+# not real secrets. They're written as ${VAR:-default} so the demo runs with zero
+# setup, while any real deployment overrides them from the environment / a secret
+# manager (never commit real credentials).
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-trustbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trustbot}
+      POSTGRES_DB: ${POSTGRES_DB:-trustbot}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trustbot} -d ${POSTGRES_DB:-trustbot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-trustbot}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-trustbot123}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    volumes:
+      - miniodata:/data
+    # No healthcheck: the minio/minio image ships neither curl nor mc, so any
+    # in-image probe perpetually fails. The API ensures the bucket through the
+    # storage adapter and retries seeding, which covers MinIO startup.
+
+  api:
+    build: ./backend
+    environment:
+      APP_ENV: local
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-trustbot}:${POSTGRES_PASSWORD:-trustbot}@postgres:5432/${POSTGRES_DB:-trustbot}
+      CORS_ORIGINS: http://localhost:3000
+      STORAGE_BACKEND: s3
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_BUCKET: trustbot-evidence
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-trustbot}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-trustbot123}
+      # Demo seed data (mounted read-only below).
+      SEED_DATA_DIR: /seed/northwind_ai
+    volumes:
+      # Read-only so the app can never mutate the synthetic source data.
+      - ../seed:/seed:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+
+  web:
+    build: ./frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      # Host port is configurable so a machine already using 3000 (e.g. another
+      # local service) doesn't collide. Default keeps the documented :3000 URL.
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  miniodata:

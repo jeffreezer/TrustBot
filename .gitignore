@@ -1,0 +1,31 @@
+# --- Confidential third-party reference material: NEVER commit ---
+# Real vendor documents kept locally as references only (move out of the folder when done).
+OpenAI/
+GCP/
+Illustrative*SOC2*.pdf
+*SOC2*report*.pdf
+
+# Env / secrets
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node / Next.js
+node_modules/
+.next/
+
+# Local storage / data
+_storage/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Local agent / tooling state (session transcripts, memory — never commit)
+.claude/

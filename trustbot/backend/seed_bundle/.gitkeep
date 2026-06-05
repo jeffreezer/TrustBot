@@ -1,0 +1,2 @@
+# Placeholder so `COPY seed_bundle/ /seed/` works in local builds (empty here;
+# docker-compose mounts ../seed at runtime, deploy.sh populates this for the cloud image).

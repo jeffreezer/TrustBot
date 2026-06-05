@@ -1,0 +1,11 @@
+# Keep the build context (and Cloud Build upload) small. seed_bundle/ is intentionally
+# NOT ignored — deploy.sh stages the seed corpus there to bake into the cloud image.
+.venv/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+_storage/
+.env

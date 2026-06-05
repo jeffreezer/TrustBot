@@ -9,6 +9,8 @@ pgvector==0.3.*
 alembic==1.14.*
 pydantic-settings==2.*
 boto3==1.35.*
+# Google Cloud Storage backend (STORAGE_BACKEND=gcs); lazily imported only when selected.
+google-cloud-storage==2.*
 openpyxl==3.1.*
 # Reads the YAML golden set in the Phase 4 eval harness (evals/run_evals.py).
 pyyaml==6.*

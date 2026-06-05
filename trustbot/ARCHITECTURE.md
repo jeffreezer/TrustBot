@@ -388,9 +388,39 @@ rest of the suite. CSV is written with a UTF-8 BOM so Excel opens it cleanly.
 
 ---
 
+## Cloud deployment (Phase 5.5 — GCP)
+
+`deploy/gcp/deploy.sh` stands up the stack on Cloud Run + Cloud SQL + GCS + Secret
+Manager. The same image runs locally and in the cloud — only env changes (12-factor).
+
+- **Keyless object storage.** A `gcs` storage backend joins `local`/`s3` behind the same
+  adapter; it authenticates via ADC (the Cloud Run service account) — no static keys. The
+  S3-credential validator fires only when the backend is literally `s3`.
+- **Cloud SQL over a unix socket, password from a secret.** When `DATABASE_URL` is unset,
+  config composes it from parts (`DB_USER`/`DB_NAME`/`CLOUD_SQL_INSTANCE`) with
+  `DB_PASSWORD` injected from Secret Manager via `--set-secrets` — referenced by name,
+  never hardcoded, never logged (the password is percent-encoded into the DSN).
+- **No seeding on cold start.** The serving container only serves; a one-shot Cloud Run
+  **Job** migrates + seeds **once** (seeding embeds the corpus and must not run
+  per-instance). `entrypoint.sh` gates migrate/seed/serve on env so one image serves all
+  three roles. The seed corpus is baked into the image (Cloud Run has no bind-mount), via
+  an empty `seed_bundle/` placeholder that compose shadows with a mount and deploy.sh
+  populates for the cloud build.
+- **Production posture.** `APP_ENV=production` keeps the product routes working while the
+  debug routes (`/debug/summary`, `/retrieve`, `/answer`) return `404`. Both services
+  honor Cloud Run's `$PORT`; the web image is a production Next.js build with
+  `NEXT_PUBLIC_API_URL` inlined at build time (deploy API → capture URL → build web).
+- **Least privilege.** The runtime SA gets Secret Accessor on the two secrets only, Cloud
+  SQL Client, and Storage Object Admin on the one bucket — nothing project-wide for storage.
+- **Demo vs. real model.** The default deploy is a **public, clickable** demo on the
+  deterministic `fake` generator — no API key in front of an open endpoint, capped at
+  `--max-instances 2`. The script is parameterized for a future locked-down (IAP) instance
+  with `GENERATION_PROVIDER=api` + the LLM key.
+
+---
+
 ## Deferred to later phases (explicitly not built yet)
 
-- **Deploy to GCP** (Phase 5.5) — Cloud Run + Cloud SQL + GCS + Secret Manager.
 - The **agentic retrieval loop** (Phase 6) — a `search_knowledge_base` tool the model
   drives itself. The fixed retrieve-then-answer pipeline (above) lands first, by design.
 - An **ANN vector index** (IVFFlat/HNSW) — unneeded at demo scale; exact search now.

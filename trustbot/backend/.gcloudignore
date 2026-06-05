@@ -1,0 +1,15 @@
+# Controls what `gcloud builds submit` uploads. Explicit (not derived from .gitignore) so
+# that seed_bundle/ — which deploy.sh stages with the seed corpus to bake into the cloud
+# image — is INCLUDED, while the local virtualenv and caches are excluded.
+.venv/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+_storage/
+.env
+.git/
+.gitignore
+.dockerignore

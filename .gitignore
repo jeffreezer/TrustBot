@@ -1,7 +1,9 @@
 # --- Confidential third-party reference material: NEVER commit ---
 # Real vendor documents kept locally as references only (move out of the folder when done).
-OpenAI/
-GCP/
+# Anchored to the repo root so they ignore the top-level confidential folders WITHOUT also
+# matching nested paths like deploy/gcp/ (git is case-insensitive on macOS).
+/OpenAI/
+/GCP/
 Illustrative*SOC2*.pdf
 *SOC2*report*.pdf
 

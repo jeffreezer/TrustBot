@@ -1,0 +1,3 @@
+# deploy.sh stages the repo seed corpus here for the cloud image build; never commit the copy.
+seed_bundle/*
+!seed_bundle/.gitkeep

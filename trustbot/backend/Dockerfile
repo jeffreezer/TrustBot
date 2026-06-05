@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -39,35 +38,11 @@ ARG RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
 ARG EMBEDDING_MODEL_REVISION=5617a9f61b028005a4858fdac845db406aefb181
 ARG RERANKER_MODEL_REVISION=c5ee24cb16019beea0893ab7796b1df96625c6b8
 ENV HF_HOME=/app/.hf_cache
-RUN <<'BAKE'
-set -eu
-python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}', revision='${EMBEDDING_MODEL_REVISION}', device='cpu')"
-python -c "from sentence_transformers import CrossEncoder; CrossEncoder('${RERANKER_MODEL}', revision='${RERANKER_MODEL_REVISION}', device='cpu')"
-HUB="$HF_HOME/hub"
-for model_dir in "$HUB"/models--*; do
-    [ -d "$model_dir" ] || continue
-    # Blob hashes referenced by a loadable snapshot (one with config.json). Revision-
-    # agnostic, so pinning by commit SHA (no refs/main) still identifies what loads.
-    keep=""
-    for snap in "$model_dir"/snapshots/*/; do
-        [ -e "${snap}config.json" ] || continue        # skip weight-only orphan snapshots
-        keep="$keep $(find "$snap" -type l -exec readlink -f {} \; 2>/dev/null \
-                      | while read -r p; do basename "$p"; done)"
-    done
-    [ -n "$keep" ] || continue                          # no loadable snapshot → leave alone
-    for blob in "$model_dir"/blobs/*; do
-        [ -f "$blob" ] || continue
-        bh="$(basename "$blob")"
-        case "$keep" in *"$bh"*) continue ;; esac       # referenced by a loaded snapshot → keep
-        sz="$(stat -c%s "$blob" 2>/dev/null || echo 0)"
-        if [ "$sz" -ge 52428800 ]; then                 # >= 50 MB: a redundant weight blob
-            echo "pruning redundant weight blob ($sz bytes): $blob"
-            rm -f "$blob"
-        fi
-    done
-done
-find "$HUB" -xtype l -delete 2>/dev/null || true        # drop now-dangling snapshot symlinks
-BAKE
+# The ARGs above are exposed to this RUN as env vars and read by bake_models.sh. Using a
+# script file (not a Dockerfile heredoc) keeps this builder-agnostic — it builds the same
+# on local Docker and on Cloud Build, with no BuildKit syntax directive required.
+COPY bake_models.sh ./
+RUN sh bake_models.sh
 
 # Remaining Python deps. requirements.txt pulls in requirements-models.txt via `-r`, so
 # torch and sentence-transformers are already satisfied here (no reinstall, model-bake
@@ -80,6 +55,10 @@ COPY alembic.ini ./
 COPY entrypoint.sh ./
 COPY app ./app
 COPY evals ./evals
+# Seed corpus, baked in for Cloud Run (which has no host bind-mount). Empty placeholder
+# locally — docker-compose mounts ../seed over /seed at runtime; deploy.sh populates
+# seed_bundle/ from the repo seed before the cloud build. SEED_DATA_DIR=/seed/northwind_ai.
+COPY seed_bundle/ /seed/
 
 RUN chmod +x entrypoint.sh
 

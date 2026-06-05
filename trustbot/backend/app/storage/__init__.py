@@ -18,6 +18,10 @@ def get_storage() -> StorageAdapter:
         from .s3 import S3Storage
 
         return S3Storage()
+    if backend == "gcs":
+        from .gcs import GCSStorage
+
+        return GCSStorage()
     if backend == "local":
         from .local import LocalStorage
 

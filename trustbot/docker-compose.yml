@@ -78,9 +78,12 @@ services:
         condition: service_started
 
   web:
-    build: ./frontend
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+    build:
+      context: ./frontend
+      # Production build inlines NEXT_PUBLIC_API_URL at build time, so pass it as a build
+      # arg (the browser calls the API on the host at localhost:8000).
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
     ports:
       # Host port is configurable so a machine already using 3000 (e.g. another
       # local service) doesn't collide. Default keeps the documented :3000 URL.

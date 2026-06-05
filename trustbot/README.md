@@ -122,9 +122,19 @@ trustbot/
 
 Synthetic demo/test data (the fictional "Northwind AI" company) lives in `../seed/` and is mounted read-only into the API container, then loaded by `app/seed.py`.
 
+## Deploy to GCP
+
+`../deploy/gcp/deploy.sh` stands up the whole stack on **Cloud Run + Cloud SQL + GCS + Secret Manager** — the same images you run locally, only env changes:
+
+```bash
+PROJECT_ID=your-project ./deploy/gcp/deploy.sh
+```
+
+It's parameterized and idempotent. By default it deploys a **public, clickable demo on the deterministic `fake` generator** (no API key in front of an open endpoint), capped at `--max-instances 2`. `APP_ENV=production` keeps the product routes working while the debug routes 404. Object storage uses a keyless **GCS** backend (ADC — no static keys); Cloud SQL connects over a unix socket with the password injected from Secret Manager by name; a one-shot Cloud Run **Job** migrates + seeds once (never on cold start). See [`../deploy/gcp/README.md`](../deploy/gcp/README.md) for prerequisites, the **cost note** (Cloud SQL is the one standing cost — stop it when idle), and **teardown** commands.
+
 ## Roadmap
 
-This is Milestone 1. Phase 1 (data layer), Phase 2 (ingestion: parse → chunk → embed), Phase 3 (hybrid retrieval + reranking), Phase 4 (answer generation: the fixed retrieve-then-answer pipeline with composite confidence, structured output, and deterministic validators), and **Phase 5 (review workspace + export + audit — the first demoable build, `v0.1`)** are in place. Subsequent phases add deploy-to-GCP (Phase 5.5), the agentic retrieval loop (Phase 6), the full eval gate (Phase 7), and security hardening. See `../04_TrustBot_MVP_Build_Guide.md`.
+This is Milestone 1. Phase 1 (data layer), Phase 2 (ingestion: parse → chunk → embed), Phase 3 (hybrid retrieval + reranking), Phase 4 (answer generation: the fixed retrieve-then-answer pipeline with composite confidence, structured output, and deterministic validators), **Phase 5 (review workspace + export + audit — the first demoable build, `v0.1`)**, and **Phase 5.5 (deploy to GCP — Cloud Run + Cloud SQL + GCS + Secret Manager)** are in place. Subsequent phases add the agentic retrieval loop (Phase 6), the full eval gate (Phase 7), and security hardening. See `../04_TrustBot_MVP_Build_Guide.md`.
 
 ## License
 

@@ -3,6 +3,8 @@
 Keeping all config in the environment is what makes the same image run locally,
 on GCP, or on AWS with only a config change.
 """
+from urllib.parse import quote
+
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -30,11 +32,19 @@ class Settings(BaseSettings):
     # are baked into the code. Validated below (fail-closed outside local/dev/test).
     database_url: str = ""
 
+    # Cloud SQL via unix socket (Cloud Run): when DATABASE_URL is empty but these parts
+    # are set, the URL is composed below. db_password comes from Secret Manager via the
+    # DB_PASSWORD env (--set-secrets) — referenced by name, never committed/hardcoded.
+    db_user: str = ""
+    db_password: str = ""
+    db_name: str = ""
+    cloud_sql_instance: str = ""  # PROJECT:REGION:INSTANCE connection name
+
     # API
     cors_origins: str = "http://localhost:3000"
 
-    # Object storage (S3-compatible)
-    storage_backend: str = "local"  # "local" | "s3"
+    # Object storage. "local" | "s3" (MinIO/S3) | "gcs" (Google Cloud Storage).
+    storage_backend: str = "local"
     local_storage_dir: str = "./_storage"
     s3_endpoint_url: str = "http://localhost:9000"
     s3_bucket: str = "trustbot-evidence"
@@ -44,6 +54,13 @@ class Settings(BaseSettings):
     # Optional S3 server-side encryption (e.g. "AES256" or "aws:kms"). Left empty
     # by default so the local MinIO demo isn't broken; enable in cloud.
     s3_sse: str = ""
+
+    # Google Cloud Storage backend (STORAGE_BACKEND=gcs). Authenticates via ADC — on
+    # Cloud Run that's the service account, so there are no static keys. The bucket is
+    # provisioned by deploy.sh; downloads use v4 signed, expiring URLs.
+    gcs_bucket: str = ""
+    gcs_project: str = ""  # optional; ADC usually infers the project
+    signed_url_expiry: int = 3600  # seconds
 
     # Seed data location (the synthetic Northwind company). Mounted read-only in
     # docker; override for local runs.
@@ -125,6 +142,21 @@ class Settings(BaseSettings):
         default. In non-production, a credential-free local default is allowed so
         the demo and tests run with zero setup.
         """
+        # Cloud SQL unix-socket path: compose the URL from parts when no full URL is
+        # given. The password (from Secret Manager) is percent-encoded; the assembled
+        # URL contains it, so it is never logged (see db/__init__.py).
+        if (
+            not self.database_url
+            and self.cloud_sql_instance
+            and self.db_user
+            and self.db_password
+            and self.db_name
+        ):
+            self.database_url = (
+                f"postgresql+psycopg://{self.db_user}:{quote(self.db_password, safe='')}"
+                f"@/{self.db_name}?host=/cloudsql/{self.cloud_sql_instance}"
+            )
+
         if not self.database_url:
             if self.is_non_production:
                 self.database_url = _LOCAL_DB_FALLBACK
@@ -134,6 +166,17 @@ class Settings(BaseSettings):
                     "APP_ENV is not one of local/dev/test."
                 )
 
+        # GCS uses ADC (no static keys); the only hard requirement is the bucket name.
+        if (
+            self.storage_backend == "gcs"
+            and not self.gcs_bucket
+            and not self.is_non_production
+        ):
+            raise ValueError(
+                "GCS_BUCKET must be set when STORAGE_BACKEND=gcs outside local/dev/test."
+            )
+
+        # S3-credential checks apply only when the backend is literally s3.
         if self.storage_backend == "s3" and not self.is_non_production:
             missing = [
                 key

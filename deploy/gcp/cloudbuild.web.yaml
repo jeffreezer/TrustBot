@@ -1,0 +1,19 @@
+# Build the Next.js web image, passing NEXT_PUBLIC_API_URL as a build arg so it is
+# inlined into the client bundle at build time (Next.js requires NEXT_PUBLIC_* at build,
+# not run, time). Invoked by deploy.sh after the API is deployed and its URL is known.
+#   gcloud builds submit ./trustbot/frontend \
+#     --config=deploy/gcp/cloudbuild.web.yaml \
+#     --substitutions=_API_URL=<api-url>,_IMAGE=<image>
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg
+      - NEXT_PUBLIC_API_URL=${_API_URL}
+      - -t
+      - ${_IMAGE}
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args: ['push', '${_IMAGE}']
+images:
+  - ${_IMAGE}

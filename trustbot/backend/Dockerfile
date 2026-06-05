@@ -24,6 +24,7 @@ RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('${R
 COPY alembic.ini ./
 COPY entrypoint.sh ./
 COPY app ./app
+COPY evals ./evals
 
 RUN chmod +x entrypoint.sh
 

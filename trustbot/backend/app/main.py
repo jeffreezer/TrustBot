@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .answers import generate_answer, persist_answer
 from .config import settings
 from .db import check_db, get_session
 from .db.models import (
@@ -145,4 +146,40 @@ def retrieve_chunks(
             }
             for r in results
         ],
+    }
+
+
+class AnswerRequest(BaseModel):
+    """Bounded/validated at the boundary (untrusted input)."""
+
+    question: str = Field(min_length=1, max_length=2000)
+    top_k: int = Field(default=5, ge=1, le=20)
+    persist: bool = True
+
+
+@app.post("/answer", dependencies=[Depends(require_debug_enabled)])
+def answer_question(
+    req: AnswerRequest, session: Session = Depends(get_session)
+) -> dict:
+    """Draft an evidence-grounded answer for a question (fixed retrieve-then-answer).
+
+    Returns answer text, so it's gated to non-production like /retrieve. Single-tenant
+    demo: scopes to the first org. The draft is never auto-emitted — ``needs_human_review``
+    governs Phase 5 review; nothing here is customer-facing without human sign-off.
+    """
+    org = session.scalar(select(Organization).limit(1))
+    if org is None:
+        return {"seeded": False}
+
+    ga = generate_answer(session, org=org, question=req.question, top_k=req.top_k)
+    answer_id: str | None = None
+    if req.persist:
+        answer = persist_answer(session, org=org, ga=ga)
+        session.commit()
+        answer_id = str(answer.id)
+
+    return {
+        "org": {"id": str(org.id), "slug": org.slug},
+        "answer_id": answer_id,
+        **ga.model_dump(mode="json"),
     }

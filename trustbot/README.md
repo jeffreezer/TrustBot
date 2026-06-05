@@ -1,6 +1,6 @@
 # TrustBot
 
-> Evidence-backed AI security questionnaire responder. **Phase 3 — hybrid retrieval** is in place on top of Phase 1 (data layer) and Phase 2 (ingestion): a question is answered by fusing pgvector cosine similarity with Postgres full-text search, then reranking the candidates with a CPU cross-encoder — all behind the same provider abstraction, with org/shareability metadata filters applied on every query. Answer generation and the review UI come in later phases (see `../04_TrustBot_MVP_Build_Guide.md`).
+> Evidence-backed AI security questionnaire responder. **Phase 4 — answer generation** is in place on top of Phase 1 (data layer), Phase 2 (ingestion), and Phase 3 (hybrid retrieval): a question is retrieved against (pgvector + Postgres FTS, fused and reranked), then drafted into a structured, evidence-cited answer — or an explicit **unknown / needs-human-review** state when the evidence can't support it. Confidence is a composite (relevance + authority + agreement + coverage), not the rerank score, and deterministic validators run before anything is persisted. The review UI is Phase 5 (see `../04_TrustBot_MVP_Build_Guide.md`).
 
 TrustBot drafts answers to security questionnaires using only a company's verified, approved evidence — and flags anything it can't support for human review, instead of guessing. Open source (MIT) and self-hostable: your security data never has to leave your infrastructure.
 
@@ -33,6 +33,7 @@ Services:
 | API health | http://localhost:8000/health |
 | Seed summary | http://localhost:8000/debug/summary |
 | Retrieve (POST) | http://localhost:8000/retrieve |
+| Answer (POST) | http://localhost:8000/answer |
 | MinIO console | http://localhost:9001 (user `trustbot` / pass `trustbot123`) |
 | Postgres | localhost:5432 (user/pass/db `trustbot`) |
 
@@ -61,6 +62,25 @@ curl -s localhost:8000/retrieve -H 'content-type: application/json' \
 
 Like `/debug/summary`, `/retrieve` returns chunk **text**, so it is **gated to non-production** (`404` otherwise). It's a tuning/demo endpoint; the request body is bounded and validated at the boundary. Set `RERANKER_PROVIDER=hash` (deterministic lexical fake) or `none` (skip the cross-encoder) to run retrieval without the reranker model.
 
+### Answer generation (`POST /answer`)
+
+Phase 4 drafts a structured, evidence-cited answer from the retrieved grounding — or an explicit `unknown / needs_human_review` state when the evidence is missing, insufficient, low-confidence, or conflicting. It **never fabricates**: the draft is grounded only in retrieved, customer-shareable evidence, deterministic validators run before persist (cited evidence must exist and be org-scoped; no certification claimed without an attestation record; no internal-only content in a customer-facing answer), and the draft is **persisted but never auto-emitted** — a human approves in Phase 5.
+
+```bash
+curl -s localhost:8000/answer -H 'content-type: application/json' \
+  -d '{"question": "What are your data classification levels?"}' | jq
+```
+
+**Confidence is a composite, not the rerank score.** The rerank logit measures relevance only; the answer's `confidence` blends relevance + **source authority** + **cross-source agreement** + **question coverage**, so a fact stated verbatim in an authoritative policy scores `high` even when its rerank logit is modest. The response includes `confidence_factors` showing the breakdown.
+
+The demo runs the deterministic, grounding-only **fake** generator (`GENERATION_PROVIDER=fake`, set in compose) so the stack needs no external model and CI stays offline. For real drafting set `GENERATION_PROVIDER=api` with `MODEL_BASE_URL` / `MODEL_API_KEY` / `GENERATION_MODEL` (any OpenAI-compatible server — OpenAI, vLLM, Ollama's `/v1`). Like `/retrieve`, `/answer` returns answer text and is **gated to non-production**.
+
+The golden set can be run through this path (safety gates: unknown-fallback, no overclaim, the data-classification answer lists the four tiers and cites the policy):
+
+```bash
+docker compose exec -T api python -m evals.run_evals
+```
+
 ## Repository layout
 
 ```
@@ -76,9 +96,11 @@ trustbot/
 │       ├── seed.py         # loads + ingests the Northwind demo company
 │       ├── db/             # engine, models, alembic migrations
 │       ├── storage/        # storage adapter: local + S3 (MinIO/GCS/S3)
-│       ├── providers/      # model abstraction: embeddings + reranker (local | hash | api/none)
+│       ├── providers/      # model abstraction: embeddings + reranker + generation
 │       ├── ingestion/      # parse → chunk → embed → knowledge_chunks
-│       └── retrieval/      # hybrid search (vector + keyword) → fuse → rerank
+│       ├── retrieval/      # hybrid search (vector + keyword) → fuse → rerank
+│       └── answers/        # draft → composite confidence → validate → GeneratedAnswer
+├── evals/                  # golden-set eval harness for the generation path
 └── frontend/               # Next.js app (health status page)
 ```
 
@@ -86,7 +108,7 @@ Synthetic demo/test data (the fictional "Northwind AI" company) lives in `../see
 
 ## Roadmap
 
-This is Milestone 1. Phase 1 (data layer), Phase 2 (ingestion: parse → chunk → embed), and Phase 3 (hybrid retrieval + reranking) are in place. Subsequent phases add answer generation (fixed pipeline, then agentic), the review workspace, evals, and security hardening. See `../04_TrustBot_MVP_Build_Guide.md`.
+This is Milestone 1. Phase 1 (data layer), Phase 2 (ingestion: parse → chunk → embed), Phase 3 (hybrid retrieval + reranking), and Phase 4 (answer generation: the fixed retrieve-then-answer pipeline with composite confidence, structured output, and deterministic validators) are in place. Subsequent phases add the review workspace (Phase 5), the agentic retrieval loop (Phase 6), the full eval gate (Phase 7), and security hardening. See `../04_TrustBot_MVP_Build_Guide.md`.
 
 ## License
 

@@ -2,8 +2,8 @@
 
 A running log of notable, non-obvious decisions — the *why* behind the code, so
 future changes don't relitigate settled tradeoffs. Newest sections may be added
-as later phases land. Scope to date: **Milestone 1, Phases 1–3 (data layer +
-evidence ingestion + hybrid retrieval).**
+as later phases land. Scope to date: **Milestone 1, Phases 1–4 (data layer +
+evidence ingestion + hybrid retrieval + answer generation).**
 
 ## Guiding constraints
 
@@ -249,6 +249,76 @@ bounded, validated request body.
 
 ---
 
+## Answer generation (Phase 4)
+
+The fixed retrieve-then-answer pipeline (`app/answers/`): `retrieve → draft → resolve
+citations → composite confidence → deterministic validators → GeneratedAnswer`. Still
+fixed (no agentic loop / decomposition — that's Phase 6); the model drafts, a human
+approves (Phase 5). Every branch **fails closed**.
+
+### rerank = relevance only; confidence = composite of relevance + authority + agreement + coverage
+The cross-encoder rerank score measures query↔chunk *relevance* and nothing else — it's
+an uncalibrated, source-blind logit, so it must **never** be the answer's confidence or
+the human-review trigger on its own. `answers/confidence.py` computes a composite of
+four signals instead:
+- **relevance** — a gentle logistic squash of the cited chunks' rerank score (a soft
+  term, never a gate);
+- **authority** — weight by `source_type` (policy / SOC 2 evidence / control / approved
+  answer are authoritative; the company profile less so);
+- **agreement** — how many *independent* source documents corroborate the claim;
+- **coverage** — do the cited chunks actually contain the salient terms of the question.
+
+Authority + coverage deliberately dominate the weights, so an answer **stated verbatim in
+an authoritative policy resolves to HIGH even when the rerank logit is modest or
+negative** — the exact failure the Phase 3 analysis surfaced. Only a `high` band clears
+without a review flag; anything lower routes to a human.
+
+### Synthesize over the full top-k, not the #1 chunk
+The generator is grounded on the whole top-k, and (when sources are redundant) prefers
+citing the **authoritative** one. In Phase 3 a vague approved answer outranked the chunk
+that actually listed the data-classification tiers; a #1-only approach would have
+produced the weaker answer.
+
+### Generation behind the provider abstraction; instructions ≠ data
+A `GenerationProvider` (the only place an LLM is touched) is selected by
+`GENERATION_PROVIDER`: **`api`** (OpenAI-compatible `/v1/chat/completions` via
+`MODEL_BASE_URL`/`MODEL_API_KEY`, default) or **`fake`** (a deterministic, grounding-only
+stand-in for tests/CI/demo that *cannot fabricate* — it returns `unknown` when grounding
+is insufficient). Trusted instructions go in the **system** channel; the question and
+retrieved evidence go in the **user** channel, fenced and labeled as data. Retrieved text
+is **data, never instructions**: `detect_injection` screens it and routes injection-like
+content to review rather than acting on it.
+
+### Deterministic validators, run before persist/return (fail closed)
+The model is never trusted to self-police. `answers/validate.py` (pure, DB-free, so it's
+unit-tested without a database) checks: required fields present and confidence in range;
+**every cited evidence id exists and is org-scoped** (a hallucinated or out-of-scope
+citation fails); **no certification asserted without a supporting attestation record**
+(catches FedRAMP / SOC 1 overclaims); and **no internal-only / non-customer-shareable
+evidence in a customer-facing answer** (the same Phase 3 gate — and retrieval already
+filters to `customer_shareable=True`, so it's defense in depth). Any failure → routed to
+human review with the reason, never silently dropped.
+
+### Unknown-fallback and approved-answer re-validation
+Missing, insufficient, low-composite-confidence, or conflicting evidence, a malformed
+draft, or a failed validator all yield the structured `unknown / needs_human_review`
+state — never a guess (principle 1). A draft cited **only** to a prior approved answer is
+treated as a reuse *candidate*, not a bypass (principle 7): it is flagged for review as
+"not corroborated by current evidence," so an approved answer is re-validated, never
+echoed verbatim.
+
+### Persistence and the eval harness
+`generate → validate → persist`: the answer is written to `answers` (with an
+`audit_log` entry carrying labels/counts only — never answer text) against a
+materialized ad-hoc `Question`, keeping referential integrity without a schema change.
+`POST /answer` exposes it, **gated to non-production** like `/retrieve`. `evals/run_evals.py`
+runs the golden set through this path; its *gates* are the deterministic safety
+guarantees (unknown-fallback for FedRAMP/HIPAA/SOC 1, no overclaim, the NW-005
+data-classification answer lists the four tiers and cites the policy), while outcome
+accuracy is reported as a generator-dependent metric.
+
+---
+
 ## API surface & configuration
 
 - **Introspection is fail-closed.** `GET /debug/summary` is gated to non-production
@@ -263,11 +333,9 @@ bounded, validated request body.
 
 ## Deferred to later phases (explicitly not built yet)
 
-- **Answer generation** (Phase 4): structured/validated answers from retrieved chunks,
-  with the `unknown / needs-human-review` fallback when evidence is absent.
-- Model-output validation (cited evidence exists and is org-owned; no certification
-  claimed without support; no internal-only content in customer-facing answers).
+- The **review workspace** (Phase 5): the human approve / edit / reject UI over the
+  drafted answers. Generation flags `needs_human_review`; the workspace acts on it.
 - The **agentic retrieval loop** (Phase 6) — a `search_knowledge_base` tool the model
-  drives itself. The fixed retrieve pipeline (above) lands first, by design.
+  drives itself. The fixed retrieve-then-answer pipeline (above) lands first, by design.
 - An **ANN vector index** (IVFFlat/HNSW) — unneeded at demo scale; exact search now.
 - Authn/z and org-scoping on API routes (this endpoint set is a single-tenant demo).

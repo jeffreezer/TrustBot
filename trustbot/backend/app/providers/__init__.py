@@ -10,6 +10,7 @@ from functools import lru_cache
 
 from ..config import settings
 from .base import EmbeddingProvider, ProviderError
+from .generation_base import DraftRequest, GenerationProvider, GroundingDoc
 from .rerank_base import RerankProvider
 
 
@@ -51,10 +52,34 @@ def get_rerank_provider() -> RerankProvider:
     raise ProviderError(f"unknown RERANKER_PROVIDER: {settings.reranker_provider!r}")
 
 
+@lru_cache(maxsize=1)
+def get_generation_provider() -> GenerationProvider:
+    choice = settings.generation_provider.strip().lower()
+    if choice == "api":
+        from .openai_generation import OpenAICompatibleGenerationProvider
+
+        return OpenAICompatibleGenerationProvider(
+            settings.model_base_url,
+            settings.model_api_key,
+            settings.generation_model,
+            temperature=settings.generation_temperature,
+            max_tokens=settings.generation_max_tokens,
+        )
+    if choice == "fake":
+        from .fake_generator import FakeGenerationProvider
+
+        return FakeGenerationProvider()
+    raise ProviderError(f"unknown GENERATION_PROVIDER: {settings.generation_provider!r}")
+
+
 __all__ = [
     "EmbeddingProvider",
     "RerankProvider",
+    "GenerationProvider",
+    "DraftRequest",
+    "GroundingDoc",
     "ProviderError",
     "get_embedding_provider",
     "get_rerank_provider",
+    "get_generation_provider",
 ]

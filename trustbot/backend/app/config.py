@@ -73,6 +73,17 @@ class Settings(BaseSettings):
     retrieval_candidate_k: int = 20
     retrieval_top_k: int = 5
 
+    # Answer generation backend (Phase 4), selected by the provider abstraction:
+    #   "api"  – OpenAI-compatible /v1/chat/completions (default; set MODEL_BASE_URL +
+    #            MODEL_API_KEY + GENERATION_MODEL, e.g. OpenAI / vLLM / Ollama's /v1)
+    #   "fake" – deterministic, grounding-only stand-in (tests / offline CI / demo);
+    #            never fabricates, returns 'unknown' when grounding is insufficient
+    # The docker-compose demo sets "fake" so the stack runs with zero external setup.
+    generation_provider: str = "api"
+    generation_model: str = "gpt-4o-mini"
+    generation_temperature: float = 0.0
+    generation_max_tokens: int = 800
+
     # Character-based chunking (token-free so tests need no tokenizer/model).
     # Overlap preserves context across chunk boundaries.
     chunk_size: int = 1200
@@ -141,6 +152,11 @@ class Settings(BaseSettings):
             raise ValueError(
                 "RETRIEVAL_TOP_K must be > 0 and <= RETRIEVAL_CANDIDATE_K."
             )
+
+        if self.generation_temperature < 0:
+            raise ValueError("GENERATION_TEMPERATURE must be >= 0.")
+        if self.generation_max_tokens <= 0:
+            raise ValueError("GENERATION_MAX_TOKENS must be positive.")
 
         return self
 

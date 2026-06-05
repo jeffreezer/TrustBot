@@ -39,7 +39,13 @@ services:
     # storage adapter and retries seeding, which covers MinIO startup.
 
   api:
-    build: ./backend
+    build:
+      context: ./backend
+      # Pin the baked model revisions. The same variables feed the runtime env below, so a
+      # single override keeps build-time and runtime weights in lockstep (see config.py).
+      args:
+        EMBEDDING_MODEL_REVISION: ${EMBEDDING_MODEL_REVISION:-5617a9f61b028005a4858fdac845db406aefb181}
+        RERANKER_MODEL_REVISION: ${RERANKER_MODEL_REVISION:-c5ee24cb16019beea0893ab7796b1df96625c6b8}
     environment:
       APP_ENV: local
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-trustbot}:${POSTGRES_PASSWORD:-trustbot}@postgres:5432/${POSTGRES_DB:-trustbot}
@@ -54,6 +60,10 @@ services:
       # stack runs with zero external setup. Set GENERATION_PROVIDER=api (+ MODEL_BASE_URL
       # / MODEL_API_KEY / GENERATION_MODEL) to draft with a real OpenAI-compatible model.
       GENERATION_PROVIDER: ${GENERATION_PROVIDER:-fake}
+      # Pinned model revisions — same variables as the build args above, so the container
+      # loads exactly the baked weights offline (build and runtime can never drift).
+      EMBEDDING_MODEL_REVISION: ${EMBEDDING_MODEL_REVISION:-5617a9f61b028005a4858fdac845db406aefb181}
+      RERANKER_MODEL_REVISION: ${RERANKER_MODEL_REVISION:-c5ee24cb16019beea0893ab7796b1df96625c6b8}
       # Demo seed data (mounted read-only below).
       SEED_DATA_DIR: /seed/northwind_ai
     volumes:

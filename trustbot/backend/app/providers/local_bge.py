@@ -14,8 +14,9 @@ from .base import EmbeddingProvider, ProviderError
 class LocalBGEEmbeddingProvider(EmbeddingProvider):
     name = "local-bge-m3"
 
-    def __init__(self, model_name: str) -> None:
+    def __init__(self, model_name: str, revision: str | None = None) -> None:
         self._model_name = model_name
+        self._revision = revision or None  # pin to an exact upstream commit when set
         self._model = None  # lazily loaded
 
     def _ensure_model(self):
@@ -27,7 +28,9 @@ class LocalBGEEmbeddingProvider(EmbeddingProvider):
                     "sentence-transformers is required for EMBEDDING_PROVIDER=local; "
                     "install it or select another provider"
                 ) from exc
-            self._model = SentenceTransformer(self._model_name, device="cpu")
+            self._model = SentenceTransformer(
+                self._model_name, revision=self._revision, device="cpu"
+            )
         return self._model
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:

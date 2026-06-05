@@ -20,7 +20,9 @@ def get_embedding_provider() -> EmbeddingProvider:
     if choice == "local":
         from .local_bge import LocalBGEEmbeddingProvider
 
-        return LocalBGEEmbeddingProvider(settings.embedding_model)
+        return LocalBGEEmbeddingProvider(
+            settings.embedding_model, settings.embedding_model_revision
+        )
     if choice == "hash":
         from .hash_embedder import HashEmbeddingProvider
 
@@ -40,7 +42,9 @@ def get_rerank_provider() -> RerankProvider:
     if choice == "local":
         from .local_cross_encoder import LocalCrossEncoderRerankProvider
 
-        return LocalCrossEncoderRerankProvider(settings.reranker_model)
+        return LocalCrossEncoderRerankProvider(
+            settings.reranker_model, settings.reranker_model_revision
+        )
     if choice == "hash":
         from .lexical_reranker import LexicalRerankProvider
 

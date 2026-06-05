@@ -21,32 +21,44 @@ RUN pip install --no-cache-dir -r requirements-models.txt
 # Then prune redundant duplicate weight formats from the baked HF cache to shrink the
 # image, IN THE SAME RUN as the bake so the bytes actually leave the layer (a delete in a
 # later layer wouldn't reclaim space). Hugging Face can cache more than one weight format
-# per model — e.g. BGE-M3's `main` revision ships pytorch_model.bin while an auto-converted
-# model.safetensors lands on a separate revision — but only ONE is ever loaded: the weight
-# referenced by each model's `main`-ref snapshot. We delete large weight blobs NOT
-# referenced by `main` (~2 GB for BGE-M3). Conservative and general: keyed on what actually
-# loads (never hardcodes a model/format), skips a model with no refs/main, only touches
-# blobs >= 50 MB, and never removes the main-referenced weights, configs, or tokenizers.
+# per model — e.g. BGE-M3 ships pytorch_model.bin while a bot auto-converts a
+# model.safetensors into a *separate, weight-only* snapshot — but only ONE is ever loaded:
+# the weight in the loadable snapshot (the one carrying config.json). We keep every blob
+# referenced by a config.json-bearing snapshot and delete other weight blobs (~2 GB for
+# BGE-M3's orphan safetensors). Keyed on config.json, not refs/main, because pinning by
+# commit SHA doesn't write a refs/main — so this prunes correctly whether pinned or not.
+# Conservative: never hardcodes a model/format, skips a model with no loadable snapshot,
+# only touches blobs >= 50 MB, never removes a loaded weight, config, or tokenizer.
 ARG EMBEDDING_MODEL=BAAI/bge-m3
 ARG RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
+# Pin to explicit upstream commit revisions so the bake is reproducible + tamper-evident
+# (not whatever each repo's `main` happens to point at). These MUST equal the runtime
+# revisions in config.py (EMBEDDING_MODEL_REVISION / RERANKER_MODEL_REVISION) or the
+# container will try to fetch a different revision and fail offline; docker-compose drives
+# the build arg and the runtime env from the same variable to keep them in lockstep.
+ARG EMBEDDING_MODEL_REVISION=5617a9f61b028005a4858fdac845db406aefb181
+ARG RERANKER_MODEL_REVISION=c5ee24cb16019beea0893ab7796b1df96625c6b8
 ENV HF_HOME=/app/.hf_cache
 RUN <<'BAKE'
 set -eu
-python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}', device='cpu')"
-python -c "from sentence_transformers import CrossEncoder; CrossEncoder('${RERANKER_MODEL}', device='cpu')"
+python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}', revision='${EMBEDDING_MODEL_REVISION}', device='cpu')"
+python -c "from sentence_transformers import CrossEncoder; CrossEncoder('${RERANKER_MODEL}', revision='${RERANKER_MODEL_REVISION}', device='cpu')"
 HUB="$HF_HOME/hub"
 for model_dir in "$HUB"/models--*; do
     [ -d "$model_dir" ] || continue
-    [ -f "$model_dir/refs/main" ] || continue          # only prune when we know what loads
-    main_snap="$model_dir/snapshots/$(cat "$model_dir/refs/main")"
-    [ -d "$main_snap" ] || continue
-    # Blob hashes the main (loaded) snapshot points at — these are kept no matter what.
-    keep="$(find "$main_snap" -type l -exec readlink -f {} \; 2>/dev/null \
-            | while read -r p; do basename "$p"; done)"
+    # Blob hashes referenced by a loadable snapshot (one with config.json). Revision-
+    # agnostic, so pinning by commit SHA (no refs/main) still identifies what loads.
+    keep=""
+    for snap in "$model_dir"/snapshots/*/; do
+        [ -e "${snap}config.json" ] || continue        # skip weight-only orphan snapshots
+        keep="$keep $(find "$snap" -type l -exec readlink -f {} \; 2>/dev/null \
+                      | while read -r p; do basename "$p"; done)"
+    done
+    [ -n "$keep" ] || continue                          # no loadable snapshot → leave alone
     for blob in "$model_dir"/blobs/*; do
         [ -f "$blob" ] || continue
         bh="$(basename "$blob")"
-        case "$keep" in *"$bh"*) continue ;; esac       # referenced by main → keep
+        case "$keep" in *"$bh"*) continue ;; esac       # referenced by a loaded snapshot → keep
         sz="$(stat -c%s "$blob" 2>/dev/null || echo 0)"
         if [ "$sz" -ge 52428800 ]; then                 # >= 50 MB: a redundant weight blob
             echo "pruning redundant weight blob ($sz bytes): $blob"

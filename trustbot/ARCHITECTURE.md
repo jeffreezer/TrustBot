@@ -133,6 +133,27 @@ multi-GB CUDA build) and pre-downloads BGE-M3 during `docker compose up --build`
 running container then has **no network dependency and no first-request download** —
 heavier build, predictable runtime. CPU inference is acceptable at demo scale.
 
+### Model weights: provenance & integrity
+We bake both local models at build time, **pinned to explicit upstream commit revisions**
+rather than each repo's moving `main`, so a future build bakes the *same* bytes —
+reproducible and tamper-evident (a silent upstream weight change can't slip in):
+
+- `BAAI/bge-m3` → `5617a9f61b028005a4858fdac845db406aefb181`
+- `cross-encoder/ms-marco-MiniLM-L-6-v2` → `c5ee24cb16019beea0893ab7796b1df96625c6b8`
+
+The revision is a single env-driven knob (`EMBEDDING_MODEL_REVISION` /
+`RERANKER_MODEL_REVISION`) that docker-compose feeds to **both** the build arg and the
+runtime env, so build-time and runtime always request the same revision — otherwise the
+offline container would try to fetch a different one and fail. The generation model is an
+external API (not a baked weight), so it needs no pinning.
+
+We load the official **`.bin`** weights (`torch.load` / pickle). The pickle-execution risk
+is **bounded**: the bytes come from a *pinned, official* upstream, fixed at build time, and
+the product never loads user-supplied models. We deliberately do **not** use the
+`safetensors` variant for BGE-M3, because the only one available is a **bot auto-conversion
+on a separate revision** (different provenance); pinning the official `.bin` is the stronger
+trust story. Revisit if BAAI ships an official safetensors on the pinned revision.
+
 ### Structure-aware chunking, with a character-window floor
 `chunk_document()` (in `ingestion/structure.py`) is the primary path: for Markdown it
 splits on section headings so each section becomes one topically coherent chunk

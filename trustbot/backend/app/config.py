@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-m3"
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
+    # Pinned upstream commit revisions for the baked local models, so a future build bakes
+    # the *same* bytes (reproducible, tamper-evident) instead of whatever each repo's `main`
+    # points to. The running container loads these revisions offline, so they MUST equal the
+    # revisions baked at build time — docker-compose drives both the build arg and this env
+    # from the same variable to keep them in lockstep. Env-overridable (principle 4).
+    embedding_model_revision: str = "5617a9f61b028005a4858fdac845db406aefb181"
+    reranker_model_revision: str = "c5ee24cb16019beea0893ab7796b1df96625c6b8"
+
     # Embedding backend selected by the provider abstraction (Phase 2):
     #   "local" – BGE-M3 on CPU (default; model baked into the image at build time)
     #   "hash"  – deterministic, dependency-free fake (test suite / offline CI)

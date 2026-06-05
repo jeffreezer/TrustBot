@@ -56,6 +56,20 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-m3"
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
+    # Embedding backend selected by the provider abstraction (Phase 2):
+    #   "local" – BGE-M3 on CPU (default; model baked into the image at build time)
+    #   "hash"  – deterministic, dependency-free fake (test suite / offline CI)
+    #   "api"   – OpenAI-compatible /v1/embeddings (uses MODEL_BASE_URL + MODEL_API_KEY)
+    embedding_provider: str = "local"
+
+    # Character-based chunking (token-free so tests need no tokenizer/model).
+    # Overlap preserves context across chunk boundaries.
+    chunk_size: int = 1200
+    chunk_overlap: int = 200
+
+    # Hard cap on a single document accepted for ingestion (boundary validation).
+    max_ingest_bytes: int = 10 * 1024 * 1024  # 10 MiB
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
@@ -104,6 +118,11 @@ class Settings(BaseSettings):
                     f"{', '.join(missing)} must be provided via the environment "
                     "when APP_ENV is not one of local/dev/test."
                 )
+
+        if self.chunk_size <= 0:
+            raise ValueError("CHUNK_SIZE must be positive.")
+        if not 0 <= self.chunk_overlap < self.chunk_size:
+            raise ValueError("CHUNK_OVERLAP must be >= 0 and < CHUNK_SIZE.")
 
         return self
 

@@ -7,8 +7,8 @@ Loads, into one demo org:
                       with a sha256 recorded for the audit trail)
   - evidence_control_links (framework-based associations)
   - approved_answer_library (Northwind's completed CAIQ + Security Questionnaire)
-
-knowledge_chunks stay empty — parsing/chunking/embedding is Phase 2.
+  - knowledge_chunks  (company profile + each evidence file, parsed → chunked →
+                       embedded through the provider abstraction — Phase 2)
 
 Idempotent: if the org already exists it is skipped, unless ``force=True`` (which
 deletes and recreates it). Safe to run on every container start.
@@ -42,6 +42,8 @@ from .db.models import (
     EvidenceControlLink,
     Organization,
 )
+from .ingestion import ingest_document
+from .providers import get_embedding_provider
 from .storage import get_storage, sanitize_filename
 
 ORG_NAME = "Northwind AI, Inc."
@@ -91,17 +93,20 @@ def _seed_dir() -> Path:
     return path
 
 
-def _seed_company_profile(session: Session, org: Organization, seed_dir: Path) -> None:
+def _seed_company_profile(
+    session: Session, org: Organization, seed_dir: Path
+) -> CompanyProfile:
     md_path = seed_dir / "company_profile.md"
     raw = md_path.read_text(encoding="utf-8")
-    session.add(
-        CompanyProfile(
-            org_id=org.id,
-            raw_markdown=raw,
-            key_facts=KEY_FACTS,
-            source_hash=_sha256(raw.encode("utf-8")),
-        )
+    profile = CompanyProfile(
+        org_id=org.id,
+        raw_markdown=raw,
+        key_facts=KEY_FACTS,
+        source_hash=_sha256(raw.encode("utf-8")),
     )
+    session.add(profile)
+    session.flush()  # assign profile.id (used as the knowledge_chunk source_id)
+    return profile
 
 
 def _seed_controls(session: Session, org: Organization, seed_dir: Path) -> int:
@@ -132,11 +137,13 @@ def _seed_controls(session: Session, org: Organization, seed_dir: Path) -> int:
     return count
 
 
-def _seed_evidence(session: Session, org: Organization, seed_dir: Path) -> list[Evidence]:
+def _seed_evidence(
+    session: Session, org: Organization, seed_dir: Path
+) -> list[tuple[Evidence, bytes]]:
     storage = get_storage()
     storage.ensure_bucket()  # no-op for local; provisions the bucket for S3/MinIO
     evidence_dir = seed_dir / "evidence"
-    created: list[Evidence] = []
+    created: list[tuple[Evidence, bytes]] = []
     for file_path in sorted(evidence_dir.glob("*.md")):
         stem = file_path.stem
         data = file_path.read_bytes()
@@ -162,7 +169,7 @@ def _seed_evidence(session: Session, org: Organization, seed_dir: Path) -> list[
         # Tenant-namespaced key: defense in depth inside the bucket.
         key = f"org/{org.id}/evidence/{ev.id}/{sanitize_filename(file_path.name)}"
         ev.storage_path = storage.put(key, data, content_type=ev.content_type)
-        created.append(ev)
+        created.append((ev, data))
     return created
 
 
@@ -195,6 +202,51 @@ def _seed_evidence_links(
                 if code in by_code:
                     link(ev, by_code[code])
     return links
+
+
+def _seed_knowledge_chunks(
+    session: Session,
+    org: Organization,
+    profile: CompanyProfile,
+    evidence: list[tuple[Evidence, bytes]],
+) -> int:
+    """Parse → chunk → embed the company profile and each evidence file.
+
+    Confidentiality / shareability is copied onto each chunk's metadata so Phase 3
+    retrieval and Phase 4 answer validation can filter without re-joining evidence.
+    Raw bytes are passed straight through (no storage round-trip).
+    """
+    provider = get_embedding_provider()
+    total = 0
+    total += ingest_document(
+        session,
+        org_id=org.id,
+        source_type="company_profile",
+        source_id=profile.id,
+        data=profile.raw_markdown.encode("utf-8"),
+        content_type="text/markdown",
+        filename="company_profile.md",
+        meta={"title": "Company Profile", "confidentiality": "internal"},
+        provider=provider,
+    )
+    for ev, data in evidence:
+        total += ingest_document(
+            session,
+            org_id=org.id,
+            source_type="evidence",
+            source_id=ev.id,
+            data=data,
+            content_type=ev.content_type,
+            filename=ev.original_filename,
+            meta={
+                "title": ev.title,
+                "evidence_type": ev.evidence_type,
+                "confidentiality": ev.confidentiality,
+                "customer_shareable": ev.customer_shareable,
+            },
+            provider=provider,
+        )
+    return total
 
 
 def _read_questionnaire_rows(path: Path) -> list[dict[str, str]]:
@@ -292,17 +344,19 @@ def seed(session: Session, *, force: bool = False) -> dict:
     session.add(org)
     session.flush()
 
-    _seed_company_profile(session, org, seed_dir)
+    profile = _seed_company_profile(session, org, seed_dir)
     control_count = _seed_controls(session, org, seed_dir)
     evidence = _seed_evidence(session, org, seed_dir)
-    link_count = _seed_evidence_links(session, org, evidence)
+    link_count = _seed_evidence_links(session, org, [ev for ev, _ in evidence])
     approved_count = _seed_approved_answers(session, org, seed_dir)
+    chunk_count = _seed_knowledge_chunks(session, org, profile, evidence)
 
     counts = {
         "controls": control_count,
         "evidence": len(evidence),
         "evidence_control_links": link_count,
         "approved_answers": approved_count,
+        "knowledge_chunks": chunk_count,
     }
     session.add(
         AuditLog(

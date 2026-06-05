@@ -2,7 +2,8 @@
 
 A running log of notable, non-obvious decisions — the *why* behind the code, so
 future changes don't relitigate settled tradeoffs. Newest sections may be added
-as later phases land. Scope to date: **Milestone 1, Phase 1 (data layer).**
+as later phases land. Scope to date: **Milestone 1, Phases 1–2 (data layer +
+evidence ingestion).**
 
 ## Guiding constraints
 
@@ -111,6 +112,50 @@ instruction: "do it through the storage adapter, not hard-coded to MinIO.")*
 
 ---
 
+## Evidence ingestion (Phase 2)
+
+### One provider abstraction for embeddings — the only vendor-specific code
+`app/providers/` is the *single* place model/SDK-specific code lives (CLAUDE.md).
+Callers do `from app.providers import get_embedding_provider` and depend only on the
+`EmbeddingProvider` contract; nothing else imports sentence-transformers, torch, or
+an HTTP client. Three implementations, selected by `EMBEDDING_PROVIDER`:
+- **`local`** (default) — BGE-M3 on CPU via sentence-transformers.
+- **`hash`** — deterministic, dependency-free fake for tests / offline CI. Same text
+  always yields the same unit vector, so ingestion is testable without a download.
+- **`api`** — OpenAI-compatible `/v1/embeddings` (stdlib HTTP, no extra SDK), for a
+  hosted or self-hosted embedding server.
+`_validate()` enforces that every provider returns `EMBEDDING_DIM`-wide vectors, so a
+misconfigured model fails loudly instead of corrupting the `Vector(1024)` column.
+
+### Local model baked into the image at build time
+The Dockerfile installs **CPU-only torch** (from PyTorch's CPU index, to avoid the
+multi-GB CUDA build) and pre-downloads BGE-M3 during `docker compose up --build`. The
+running container then has **no network dependency and no first-request download** —
+heavier build, predictable runtime. CPU inference is acceptable at demo scale.
+
+### Character-based chunking (not token-based)
+`chunk_text()` uses fixed-size character windows with overlap (`CHUNK_SIZE` /
+`CHUNK_OVERLAP`). Char windows keep chunking **tokenizer-free**, so tests and CI need
+no model. It's deterministic — same text + params → same chunks — which is what makes
+re-ingestion idempotent and unit-testable. Token-aware chunking can replace this later
+behind the same function signature if retrieval quality needs it.
+
+### Ingestion is idempotent and tenant-scoped
+`ingest_document()` validates size at the boundary (`MAX_INGEST_BYTES`), requires an
+`org_id`, then **deletes any prior chunks for the exact (org_id, source_type,
+source_id) before inserting** — re-running the seed never duplicates or strands rows.
+The pure chunk+embed core (`build_chunk_rows`) is DB-free so it's unit-tested with the
+hash provider; the DB round-trip is verified end-to-end via `/debug/summary`.
+
+### Content is data, never instructions
+`parse_document()` only decodes and normalizes text; it never interprets, executes, or
+follows links inside a document. Phase 2 handles text/markdown only and **rejects
+unsupported binary types at this boundary** rather than mishandling them. Each chunk's
+`meta` carries `confidentiality` / `customer_shareable` copied from the source so Phase
+3 retrieval and Phase 4 answer validation can filter without re-joining evidence.
+
+---
+
 ## API surface & configuration
 
 - **Introspection is fail-closed.** `GET /debug/summary` is gated to non-production
@@ -125,8 +170,7 @@ instruction: "do it through the storage adapter, not hard-coded to MinIO.")*
 
 ## Deferred to later phases (explicitly not built yet)
 
-- Model/embedding/reranker access behind a **single provider-abstraction module**
-  (the only vendor-specific code).
+- **Reranker** access through the same provider abstraction (Phase 3).
 - The **fixed retrieve-then-answer pipeline before** any agentic loop.
 - Model-output validation (cited evidence exists and is org-owned; no certification
   claimed without support; no internal-only content in customer-facing answers).

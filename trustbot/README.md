@@ -1,6 +1,6 @@
 # TrustBot
 
-> Evidence-backed AI security questionnaire responder. **Phase 1 — data layer** complete: schema, migrations, the storage adapter, and a seeded demo company. The questionnaire workflow (ingestion, retrieval, answer generation, review UI) is built on top of this in later phases (see `../04_TrustBot_MVP_Build_Guide.md`).
+> Evidence-backed AI security questionnaire responder. **Phase 2 — evidence ingestion** is in place on top of the Phase 1 data layer: each document is parsed, chunked, and embedded into a pgvector knowledge base through a pluggable provider abstraction (local BGE-M3 on CPU by default). Retrieval + reranking, answer generation, and the review UI come in later phases (see `../04_TrustBot_MVP_Build_Guide.md`).
 
 TrustBot drafts answers to security questionnaires using only a company's verified, approved evidence — and flags anything it can't support for human review, instead of guessing. Open source (MIT) and self-hostable: your security data never has to leave your infrastructure.
 
@@ -19,7 +19,9 @@ cp .env.example .env        # optional for docker; compose sets container values
 docker compose up --build
 ```
 
-On start the API container **applies migrations and seeds the demo company automatically** (idempotent — re-runs just skip). Then open **http://localhost:3000** for the health page, or hit the API directly.
+> **First `--build` is heavier.** The API image bakes in the local **BGE-M3** embedding model (~1–2 GB) at build time, so the running container needs no model download and no network at runtime. Embeddings run on **CPU** — expected and fine at demo scale. To skip the model entirely (e.g. fast CI), set `EMBEDDING_PROVIDER=hash` for a deterministic, dependency-free fake, or `EMBEDDING_PROVIDER=api` to point at an OpenAI-compatible embedding server (`MODEL_BASE_URL` / `MODEL_API_KEY`).
+
+On start the API container **applies migrations and seeds the demo company automatically** (idempotent — re-runs just skip). Seeding now also **parses, chunks, and embeds** the company profile and every evidence file into `knowledge_chunks`. Then open **http://localhost:3000** for the health page, or hit the API directly.
 
 > **Port 3000 already in use?** The web UI's host port is configurable. Set `WEB_PORT` (e.g. `WEB_PORT=3001` in your `.env`) and open that port instead — the container-internal port stays 3000, so nothing else changes.
 
@@ -40,10 +42,10 @@ Services:
 ```json
 { "seeded": true, "org": {"name": "Northwind AI, Inc.", "slug": "northwind-ai"},
   "counts": {"controls": 30, "evidence": 5, "evidence_control_links": 38,
-             "approved_answers": 369, "knowledge_chunks": 0} }
+             "approved_answers": 369, "knowledge_chunks": 34} }
 ```
 
-`knowledge_chunks` is 0 until Phase 2 (parse → chunk → embed).
+`knowledge_chunks` is populated by the Phase 2 ingestion pipeline (parse → chunk → embed). The exact count depends on `CHUNK_SIZE` / `CHUNK_OVERLAP`; with the defaults the seed yields ~34 chunks across the profile and five evidence documents.
 
 `GET /debug/summary` is an introspection endpoint, so it is **gated to non-production environments** (`APP_ENV` in `local`/`dev`/`test`). In any other environment it returns `404` — fail-closed, so it can't leak from a production deploy.
 
@@ -59,9 +61,11 @@ trustbot/
 │   └── app/
 │       ├── main.py         # /health, /debug/summary
 │       ├── config.py       # env-var settings
-│       ├── seed.py         # loads the Northwind demo company
+│       ├── seed.py         # loads + ingests the Northwind demo company
 │       ├── db/             # engine, models, alembic migrations
-│       └── storage/        # storage adapter: local + S3 (MinIO/GCS/S3)
+│       ├── storage/        # storage adapter: local + S3 (MinIO/GCS/S3)
+│       ├── providers/      # embedding provider abstraction (local BGE-M3 | hash | api)
+│       └── ingestion/      # parse → chunk → embed → knowledge_chunks
 └── frontend/               # Next.js app (health status page)
 ```
 
@@ -69,7 +73,7 @@ Synthetic demo/test data (the fictional "Northwind AI" company) lives in `../see
 
 ## Roadmap
 
-This is Milestone 1, Phase 1 (data layer). Subsequent phases add evidence ingestion (parse → chunk → embed), retrieval + reranking, agentic answer generation, the review workspace, evals, and security hardening. See `../04_TrustBot_MVP_Build_Guide.md`.
+This is Milestone 1. Phase 1 (data layer) and Phase 2 (evidence ingestion: parse → chunk → embed) are in place. Subsequent phases add retrieval + reranking, agentic answer generation, the review workspace, evals, and security hardening. See `../04_TrustBot_MVP_Build_Guide.md`.
 
 ## License
 

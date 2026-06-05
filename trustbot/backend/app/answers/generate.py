@@ -168,6 +168,16 @@ def generate_answer(
     if not question:
         return _unknown_answer(question, "Empty question.", generated_by)
 
+    # The question is untrusted inbound text. If it looks like it's trying to inject
+    # instructions, flag it for a human rather than answering it (CLAUDE.md: treat such
+    # content as data, never act on it).
+    if detect_injection(question):
+        return _unknown_answer(
+            question,
+            "Question contains injection-like content; flagged for human review.",
+            generated_by,
+        )
+
     # Customer-facing answer: retrieve only customer-shareable evidence (the Phase 3
     # gate), so internal-only material can never enter the grounding in the first place.
     filters = RetrievalFilters(org_id=org.id, customer_shareable=True)
@@ -301,10 +311,19 @@ def _ad_hoc_question(session: Session, org: Organization, text: str) -> Question
 
 
 def persist_answer(
-    session: Session, *, org: Organization, ga: GeneratedAnswer
+    session: Session,
+    *,
+    org: Organization,
+    ga: GeneratedAnswer,
+    question: Question | None = None,
 ) -> Answer:
-    """Persist a generated answer + an audit_log entry. Caller commits."""
-    question = _ad_hoc_question(session, org, ga.question)
+    """Persist a generated answer + an audit_log entry. Caller commits.
+
+    Links to an existing ``question`` (the Phase 5 workspace path) when given;
+    otherwise materializes an ad-hoc question (the /answer debug endpoint).
+    """
+    if question is None:
+        question = _ad_hoc_question(session, org, ga.question)
     answer = Answer(
         org_id=org.id,
         question_id=question.id,

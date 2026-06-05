@@ -21,8 +21,11 @@ from .db.models import (
     EvidenceControlLink,
     KnowledgeChunk,
     Organization,
+    Question,
+    Questionnaire,
 )
 from .retrieval import RetrievalFilters, retrieve
+from .review_routes import router as review_router
 
 app = FastAPI(title="TrustBot API", version="0.1.0")
 
@@ -32,6 +35,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Phase 5 review workspace (intake, drafting, review actions, export).
+app.include_router(review_router)
 
 
 def require_debug_enabled() -> None:
@@ -93,6 +99,8 @@ def debug_summary(session: Session = Depends(get_session)) -> dict:
             "evidence_control_links": count(EvidenceControlLink),
             "approved_answers": count(ApprovedAnswer),
             "knowledge_chunks": count(KnowledgeChunk),
+            "questionnaires": count(Questionnaire),
+            "questions": count(Question),
         },
     }
 

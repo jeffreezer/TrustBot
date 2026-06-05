@@ -1,0 +1,19 @@
+id,domain,question
+Q01,Encryption,Is customer data encrypted at rest?
+Q02,Encryption,Is customer data encrypted in transit?
+Q03,Encryption,Do you support customer-managed encryption keys (CMEK/BYOK)?
+Q04,Identity & Access,Is multi-factor authentication enforced for all employee access?
+Q05,Identity & Access,Do you support single sign-on (SAML/OIDC) for customer accounts?
+Q06,Compliance,Do you have a current SOC 2 Type 2 report?
+Q07,Compliance,Are you ISO 27001 certified?
+Q08,Compliance,"Are you PCI DSS compliant, and what is the scope?"
+Q09,Compliance,Are you FedRAMP authorized?
+Q10,Compliance,Are you SOC 1 (SSAE 18) certified?
+Q11,Data Protection,What are your data classification levels?
+Q12,Privacy,Is customer data used to train your base models?
+Q13,Privacy,Will you sign a HIPAA Business Associate Agreement (BAA)?
+Q14,Resilience,Are backups encrypted and tested?
+Q15,Logging,Are security events centrally logged and monitored 24/7?
+Q16,Vulnerability Management,Do you operate a public bug bounty program?
+Q17,Vulnerability Management,Were all findings from your most recent penetration test remediated?
+Q18,Identity & Access,Is access for terminated employees always removed within one business day?

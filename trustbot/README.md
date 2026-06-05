@@ -1,6 +1,6 @@
 # TrustBot
 
-> Evidence-backed AI security questionnaire responder. **Phase 4 — answer generation** is in place on top of Phase 1 (data layer), Phase 2 (ingestion), and Phase 3 (hybrid retrieval): a question is retrieved against (pgvector + Postgres FTS, fused and reranked), then drafted into a structured, evidence-cited answer — or an explicit **unknown / needs-human-review** state when the evidence can't support it. Confidence is a composite (relevance + authority + agreement + coverage), not the rerank score, and deterministic validators run before anything is persisted. The review UI is Phase 5 (see `../04_TrustBot_MVP_Build_Guide.md`).
+> Evidence-backed AI security questionnaire responder. **Phase 5 — the review workspace** is in place on top of Phases 1–4: upload a questionnaire → the system drafts an evidence-cited answer for each question (or an explicit **unknown / needs-human-review** state) → a human reviews, edits, approves or rejects in a three-pane workspace → export with approval status. Drafting retrieves against pgvector + Postgres FTS (fused and reranked), grades each answer with a **composite** confidence (relevance + authority + agreement + coverage, *not* the rerank score), and runs deterministic validators before persisting. Nothing is auto-emitted — a human approves before anything is external. This is the first demoable build (`v0.1`).
 
 TrustBot drafts answers to security questionnaires using only a company's verified, approved evidence — and flags anything it can't support for human review, instead of guessing. Open source (MIT) and self-hostable: your security data never has to leave your infrastructure.
 
@@ -21,7 +21,7 @@ docker compose up --build
 
 > **First `--build` is heavier.** The API image bakes in the local **BGE-M3** embedding model (~1–2 GB) at build time, so the running container needs no model download and no network at runtime. Embeddings run on **CPU** — expected and fine at demo scale. To skip the model entirely (e.g. fast CI), set `EMBEDDING_PROVIDER=hash` for a deterministic, dependency-free fake, or `EMBEDDING_PROVIDER=api` to point at an OpenAI-compatible embedding server (`MODEL_BASE_URL` / `MODEL_API_KEY`).
 
-On start the API container **applies migrations and seeds the demo company automatically** (idempotent — re-runs just skip). Seeding now also **parses, chunks, and embeds** the full corpus — the company profile, every evidence file, the policy library, the control implementation statements, and the approved-answer library — into `knowledge_chunks`, each tagged with a distinct `source_type`. Markdown is chunked **structure-aware** (split on section headings, with each document's front-matter routed to metadata rather than embedded), falling back to overlapping character windows for oversized sections or heading-less sources. Then open **http://localhost:3000** for the health page, or hit the API directly.
+On start the API container **applies migrations and seeds the demo company automatically** (idempotent — re-runs just skip). Seeding now also **parses, chunks, and embeds** the full corpus — the company profile, every evidence file, the policy library, the control implementation statements, and the approved-answer library — into `knowledge_chunks`, each tagged with a distinct `source_type`. Markdown is chunked **structure-aware** (split on section headings, with each document's front-matter routed to metadata rather than embedded), falling back to overlapping character windows for oversized sections or heading-less sources. The seed also loads a **sample inbound questionnaire** (18 questions) ready to answer. Then open **http://localhost:3000** for the review workspace, or hit the API directly.
 
 > **Port 3000 already in use?** The web UI's host port is configurable. Set `WEB_PORT` (e.g. `WEB_PORT=3001` in your `.env`) and open that port instead — the container-internal port stays 3000, so nothing else changes.
 
@@ -29,11 +29,12 @@ Services:
 
 | Service | URL |
 |---|---|
-| Frontend | http://localhost:3000 (or `WEB_PORT`) |
+| Review workspace (UI) | http://localhost:3000 (or `WEB_PORT`) |
 | API health | http://localhost:8000/health |
 | Seed summary | http://localhost:8000/debug/summary |
-| Retrieve (POST) | http://localhost:8000/retrieve |
-| Answer (POST) | http://localhost:8000/answer |
+| Questionnaires (REST) | http://localhost:8000/questionnaires |
+| Retrieve (POST, debug) | http://localhost:8000/retrieve |
+| Answer (POST, debug) | http://localhost:8000/answer |
 | MinIO console | http://localhost:9001 (user `trustbot` / pass `trustbot123`) |
 | Postgres | localhost:5432 (user/pass/db `trustbot`) |
 
@@ -44,7 +45,8 @@ Services:
 ```json
 { "seeded": true, "org": {"name": "Northwind AI, Inc.", "slug": "northwind-ai"},
   "counts": {"controls": 30, "evidence": 5, "policies": 16, "evidence_control_links": 72,
-             "approved_answers": 369, "knowledge_chunks": 532} }
+             "approved_answers": 369, "knowledge_chunks": 532,
+             "questionnaires": 1, "questions": 18} }
 ```
 
 `knowledge_chunks` is populated by the Phase 2 ingestion pipeline (parse → chunk → embed) across five `source_type`s — `company_profile`, `evidence`, `policy` (governed policy documents), `control` (implementation statements), and `approved_answer` (the prior approved Q&A, retrievable reuse candidates). The exact count depends on chunking: Markdown is split on section headings (front-matter routed to metadata, not embedded), with an overlapping-window fallback (`CHUNK_SIZE` / `CHUNK_OVERLAP`) for oversized sections and heading-less sources. With the defaults the seed yields ~532 chunks.
@@ -81,6 +83,17 @@ The golden set can be run through this path (safety gates: unknown-fallback, no 
 docker compose exec -T api python -m evals.run_evals
 ```
 
+### Review workspace (Phase 5)
+
+The workspace at **http://localhost:3000** is the product surface. The demo flow, end to end:
+
+1. **Upload** a questionnaire (CSV/Excel; one question per row) — or use the sample the seed already loaded (`seed/northwind_ai/questionnaires/Inbound_Security_Questionnaire.csv`, 18 questions spanning supported answers, honest negatives, SOC 2 exceptions, and unknown-fallback traps). The file is stored via the storage adapter with a recorded hash, parsed into questions, and screened for injection-like content — never executed.
+2. **Generate drafts** — one Phase-4 answer per question (composite confidence, full-top-k synthesis, unknown-fallback, validators).
+3. **Review** in three panes: the question list with a status per item · the selected question with its editable draft, outcome, confidence, and the `needs_human_review` reason shown prominently · the supporting evidence / cited sources on the right. Each action — **approve / edit / reject / request-evidence / save-to-library** — transitions the answer's status and writes an `audit_log` entry (labels only, never answer text). "Save to library" creates an approved-answer *candidate* (re-validated on future reuse, never an authoritative bypass).
+4. **Export** to CSV/Excel — every row carries `review_status` + `needs_human_review`, so nothing reads as final that a human didn't approve.
+
+These review endpoints are the product (not gated like the debug ones); they are **org-scoped** via a single tenancy seam (`get_current_org`) so real auth slots in later without touching the queries. The upload accepts the file as the raw request body (filename via query) — no multipart dependency. PDF intake is rejected at the boundary for now (CSV/Excel only).
+
 ## Repository layout
 
 ```
@@ -91,7 +104,9 @@ trustbot/
 │   ├── alembic.ini
 │   ├── entrypoint.sh       # migrate → seed → serve
 │   └── app/
-│       ├── main.py         # /health, /debug/summary
+│       ├── main.py         # health, debug, + mounts the review router
+│       ├── review_routes.py # Phase 5: upload / generate / review / export
+│       ├── deps.py         # get_current_org — the single tenancy seam
 │       ├── config.py       # env-var settings
 │       ├── seed.py         # loads + ingests the Northwind demo company
 │       ├── db/             # engine, models, alembic migrations
@@ -99,16 +114,17 @@ trustbot/
 │       ├── providers/      # model abstraction: embeddings + reranker + generation
 │       ├── ingestion/      # parse → chunk → embed → knowledge_chunks
 │       ├── retrieval/      # hybrid search (vector + keyword) → fuse → rerank
-│       └── answers/        # draft → composite confidence → validate → GeneratedAnswer
+│       ├── answers/        # draft → composite confidence → validate → GeneratedAnswer
+│       └── questionnaires/ # intake parsing + review service (status, audit, export)
 ├── evals/                  # golden-set eval harness for the generation path
-└── frontend/               # Next.js app (health status page)
+└── frontend/               # Next.js review workspace (list/upload + three-pane review)
 ```
 
 Synthetic demo/test data (the fictional "Northwind AI" company) lives in `../seed/` and is mounted read-only into the API container, then loaded by `app/seed.py`.
 
 ## Roadmap
 
-This is Milestone 1. Phase 1 (data layer), Phase 2 (ingestion: parse → chunk → embed), Phase 3 (hybrid retrieval + reranking), and Phase 4 (answer generation: the fixed retrieve-then-answer pipeline with composite confidence, structured output, and deterministic validators) are in place. Subsequent phases add the review workspace (Phase 5), the agentic retrieval loop (Phase 6), the full eval gate (Phase 7), and security hardening. See `../04_TrustBot_MVP_Build_Guide.md`.
+This is Milestone 1. Phase 1 (data layer), Phase 2 (ingestion: parse → chunk → embed), Phase 3 (hybrid retrieval + reranking), Phase 4 (answer generation: the fixed retrieve-then-answer pipeline with composite confidence, structured output, and deterministic validators), and **Phase 5 (review workspace + export + audit — the first demoable build, `v0.1`)** are in place. Subsequent phases add deploy-to-GCP (Phase 5.5), the agentic retrieval loop (Phase 6), the full eval gate (Phase 7), and security hardening. See `../04_TrustBot_MVP_Build_Guide.md`.
 
 ## License
 

@@ -249,6 +249,9 @@ class Answer(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     review_reason: Mapped[str | None] = mapped_column(Text)
     freshness_status: Mapped[str | None] = mapped_column(String(32))
     generated_by: Mapped[str | None] = mapped_column(String(128))
+    # Human-review decision (Phase 5): pending | approved | edited | rejected |
+    # needs_evidence. The audit trail of every action lives in answer_reviews + audit_log.
+    review_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
 
     question: Mapped[Question] = relationship(back_populates="answers")
     reviews: Mapped[list[AnswerReview]] = relationship(

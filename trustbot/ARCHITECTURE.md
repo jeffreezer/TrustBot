@@ -340,6 +340,42 @@ accuracy is reported as a generator-dependent metric.
 
 ---
 
+## Review workspace (Phase 5)
+
+### The first product surface; the debug endpoints stay separate
+The intake / draft / review / export endpoints are the product, so — unlike `/retrieve`,
+`/answer`, `/debug/summary` — they are **not gated to non-production**. They are
+**org-scoped** instead, through one tenancy seam: `get_current_org` (in `deps.py`)
+returns the single seeded org today, and every review query scopes by the org it returns,
+so real auth slots in by changing only that function, not the queries.
+
+### Upload is raw-body, not multipart
+`POST /questionnaires` takes the file as the raw request body with the filename in a query
+param, so no `python-multipart` dependency is added for one upload path. Type and size are
+validated at the boundary (CSV/Excel only; PDF and oversized files are rejected); the bytes
+are stored via the adapter with a recorded hash and treated as **data, never executed**.
+Each question is injection-screened on intake, and the draft pipeline re-screens per
+question — an injection-like question is flagged for a human, not answered.
+
+### Status lives on the answer; the audit trail is append-only
+`answers.review_status` (migration 0004: `pending | approved | edited | rejected |
+needs_evidence`) is the at-a-glance state the question list and export read; the full
+history of who-did-what lives in `answer_reviews` + `audit_log`. Every reviewer action
+writes both an `answer_reviews` row and an `audit_log` entry whose payload is **labels
+only** (action + before/after status — never answer text or evidence content). Approving
+clears `needs_human_review`; reject / request-evidence keep it set. "Save to library"
+creates an `approved_answer` **candidate** (principle 7) — re-validated on future reuse,
+re-embedded only on reseed, never an authoritative bypass.
+
+### Export carries approval status (principle 2)
+CSV/Excel export emits `review_status` and `needs_human_review` on every row, so nothing
+reads as "final" that a human did not approve. The pure serialization (`rows_to_csv` /
+`rows_to_xlsx`) is DB-free and unit-tested; the DB round-trip (status writes, audit
+entries, org-scoping) is verified end-to-end against the live stack, consistent with the
+rest of the suite. CSV is written with a UTF-8 BOM so Excel opens it cleanly.
+
+---
+
 ## API surface & configuration
 
 - **Introspection is fail-closed.** `GET /debug/summary` is gated to non-production
@@ -354,9 +390,10 @@ accuracy is reported as a generator-dependent metric.
 
 ## Deferred to later phases (explicitly not built yet)
 
-- The **review workspace** (Phase 5): the human approve / edit / reject UI over the
-  drafted answers. Generation flags `needs_human_review`; the workspace acts on it.
+- **Deploy to GCP** (Phase 5.5) — Cloud Run + Cloud SQL + GCS + Secret Manager.
 - The **agentic retrieval loop** (Phase 6) — a `search_knowledge_base` tool the model
   drives itself. The fixed retrieve-then-answer pipeline (above) lands first, by design.
 - An **ANN vector index** (IVFFlat/HNSW) — unneeded at demo scale; exact search now.
-- Authn/z and org-scoping on API routes (this endpoint set is a single-tenant demo).
+- **Real authn/z** — the review routes are org-scoped through `get_current_org`, but the
+  MVP is single-tenant with no login yet; auth slots into that one seam.
+- **PDF questionnaire intake** — CSV/Excel today; PDF needs a parser dependency.

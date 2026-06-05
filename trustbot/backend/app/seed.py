@@ -29,7 +29,7 @@ from datetime import date
 from pathlib import Path
 
 import openpyxl
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -42,9 +42,11 @@ from .db.models import (
     Evidence,
     EvidenceControlLink,
     Organization,
+    Question,
 )
 from .ingestion import ingest_document, ingest_text
 from .providers import get_embedding_provider
+from .questionnaires.service import create_questionnaire
 from .storage import get_storage, sanitize_filename
 
 ORG_NAME = "Northwind AI, Inc."
@@ -563,6 +565,33 @@ def _seed_approved_answers(
     return created
 
 
+def _seed_inbound_questionnaire(
+    session: Session, org: Organization, seed_dir: Path
+) -> int:
+    """Load the sample *inbound* questionnaire (questions only) so the demo is
+    self-contained: the workspace shows it on first load, ready for draft generation.
+
+    Distinct from the completed CAIQ / Security Questionnaire (those seed the approved-
+    answer library); this one is a fresh questionnaire to answer. No drafts are generated
+    here — that's the reviewer's first action in the demo. Reuses the upload parser.
+    """
+    path = seed_dir / "questionnaires" / "Inbound_Security_Questionnaire.csv"
+    if not path.is_file():
+        return 0
+    questionnaire = create_questionnaire(
+        session,
+        org=org,
+        data=path.read_bytes(),
+        filename=path.name,
+        content_type="text/csv",
+    )
+    return session.scalar(
+        select(func.count())
+        .select_from(Question)
+        .where(Question.questionnaire_id == questionnaire.id)
+    )
+
+
 def seed(session: Session, *, force: bool = False) -> dict:
     existing = session.scalar(select(Organization).where(Organization.slug == ORG_SLUG))
     if existing is not None:
@@ -586,6 +615,7 @@ def seed(session: Session, *, force: bool = False) -> dict:
     chunk_count = _seed_knowledge_chunks(
         session, org, profile, evidence, controls, approved, policies
     )
+    question_count = _seed_inbound_questionnaire(session, org, seed_dir)
 
     counts = {
         "controls": len(controls),
@@ -594,6 +624,7 @@ def seed(session: Session, *, force: bool = False) -> dict:
         "evidence_control_links": link_count,
         "approved_answers": len(approved),
         "knowledge_chunks": chunk_count,
+        "inbound_questions": question_count,
     }
     session.add(
         AuditLog(

@@ -1,3 +1,6 @@
+# Heavy model libs (torch CPU, sentence-transformers) live in their own file so the
+# Docker model-bake layer caches independently of these fast-changing app deps.
+-r requirements-models.txt
 fastapi==0.115.*
 uvicorn[standard]==0.30.*
 sqlalchemy==2.0.*
@@ -9,6 +12,3 @@ boto3==1.35.*
 openpyxl==3.1.*
 # Reads the YAML golden set in the Phase 4 eval harness (evals/run_evals.py).
 pyyaml==6.*
-# Phase 2 embedding (local BGE-M3, CPU). torch is installed separately in the
-# Dockerfile from the CPU-only index to avoid pulling the multi-GB CUDA build.
-sentence-transformers==3.*

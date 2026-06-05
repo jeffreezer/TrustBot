@@ -1,0 +1,12 @@
+# Heavy, stable model libraries — the single source of truth for these pins.
+#
+# Isolated from requirements.txt so the Docker model-bake layer caches independently of
+# the fast-changing app deps. requirements.txt pulls these in via `-r`, so the pins live
+# in exactly one place and can never drift.
+#
+# torch is pinned to the explicit CPU build and the PyTorch CPU index is added below, so
+# torch always resolves to the CPU wheel — never the multi-GB CUDA build — no matter which
+# command installs this file. CPU inference is expected at demo scale.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.12.0+cpu
+sentence-transformers==3.*

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .chunk import chunk_text
 from .parse import ParseError, UnsupportedDocumentError, parse_document
-from .pipeline import IngestionError, build_chunk_rows, ingest_document
+from .pipeline import IngestionError, build_chunk_rows, ingest_document, ingest_text
 
 __all__ = [
     "chunk_text",
@@ -12,5 +12,6 @@ __all__ = [
     "UnsupportedDocumentError",
     "build_chunk_rows",
     "ingest_document",
+    "ingest_text",
     "IngestionError",
 ]

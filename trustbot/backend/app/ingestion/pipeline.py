@@ -66,6 +66,62 @@ def build_chunk_rows(
     ]
 
 
+def _upsert_chunks(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    source_type: str,
+    source_id: uuid.UUID | None,
+    rows: list[dict[str, Any]],
+) -> int:
+    """Idempotent write: clear any prior chunks for this exact source, then insert."""
+    stmt = delete(KnowledgeChunk).where(
+        KnowledgeChunk.org_id == org_id,
+        KnowledgeChunk.source_type == source_type,
+    )
+    stmt = stmt.where(
+        KnowledgeChunk.source_id.is_(None)
+        if source_id is None
+        else KnowledgeChunk.source_id == source_id
+    )
+    session.execute(stmt)
+    session.add_all(KnowledgeChunk(**row) for row in rows)
+    session.flush()
+    return len(rows)
+
+
+def ingest_text(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    source_type: str,
+    source_id: uuid.UUID | None,
+    text: str,
+    meta: dict[str, Any] | None = None,
+    provider: EmbeddingProvider | None = None,
+) -> int:
+    """Chunk, embed, and persist already-extracted text (e.g. a DB row's fields).
+
+    The structured-source counterpart to ``ingest_document``: controls and approved
+    answers are rows, not files, so they skip the document parser but share the same
+    chunk → embed → idempotent upsert path.
+    """
+    if org_id is None:
+        raise IngestionError("org_id is required for ingestion (tenant scoping)")
+    provider = provider or get_embedding_provider()
+    rows = build_chunk_rows(
+        org_id=org_id,
+        source_type=source_type,
+        source_id=source_id,
+        text=text,
+        provider=provider,
+        meta=meta,
+    )
+    return _upsert_chunks(
+        session, org_id=org_id, source_type=source_type, source_id=source_id, rows=rows
+    )
+
+
 def ingest_document(
     session: Session,
     *,
@@ -87,28 +143,13 @@ def ingest_document(
             f"({len(data)} > {settings.max_ingest_bytes} bytes)"
         )
 
-    provider = provider or get_embedding_provider()
     text = parse_document(data, content_type=content_type, filename=filename)
-    rows = build_chunk_rows(
+    return ingest_text(
+        session,
         org_id=org_id,
         source_type=source_type,
         source_id=source_id,
         text=text,
-        provider=provider,
         meta=meta,
+        provider=provider,
     )
-
-    # Idempotent: clear any prior chunks for this exact source, then insert fresh.
-    stmt = delete(KnowledgeChunk).where(
-        KnowledgeChunk.org_id == org_id,
-        KnowledgeChunk.source_type == source_type,
-    )
-    stmt = stmt.where(
-        KnowledgeChunk.source_id.is_(None)
-        if source_id is None
-        else KnowledgeChunk.source_id == source_id
-    )
-    session.execute(stmt)
-    session.add_all(KnowledgeChunk(**row) for row in rows)
-    session.flush()
-    return len(rows)

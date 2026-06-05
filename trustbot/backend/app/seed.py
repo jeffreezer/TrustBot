@@ -42,7 +42,7 @@ from .db.models import (
     EvidenceControlLink,
     Organization,
 )
-from .ingestion import ingest_document
+from .ingestion import ingest_document, ingest_text
 from .providers import get_embedding_provider
 from .storage import get_storage, sanitize_filename
 
@@ -109,32 +109,32 @@ def _seed_company_profile(
     return profile
 
 
-def _seed_controls(session: Session, org: Organization, seed_dir: Path) -> int:
+def _seed_controls(session: Session, org: Organization, seed_dir: Path) -> list[Control]:
     csv_path = seed_dir / "control_catalog.csv"
-    count = 0
+    created: list[Control] = []
     with csv_path.open(encoding="utf-8", newline="") as fh:
         for row in csv.DictReader(fh):
             code = (row.get("control_code") or "").strip()
             if not code:
                 continue
-            session.add(
-                Control(
-                    org_id=org.id,
-                    control_code=code,
-                    domain=(row.get("domain") or "").strip() or None,
-                    title=(row.get("title") or "").strip(),
-                    implementation_statement=(row.get("implementation_statement") or "").strip() or None,
-                    owner=(row.get("owner") or "").strip() or None,
-                    status=(row.get("status") or "").strip() or None,
-                    framework_mappings=(row.get("framework_mappings") or "").strip() or None,
-                    last_reviewed=_parse_date(row.get("last_reviewed")),
-                    next_review=_parse_date(row.get("next_review")),
-                    confidence=(row.get("confidence") or "").strip() or None,
-                    notes=(row.get("notes") or "").strip() or None,
-                )
+            control = Control(
+                org_id=org.id,
+                control_code=code,
+                domain=(row.get("domain") or "").strip() or None,
+                title=(row.get("title") or "").strip(),
+                implementation_statement=(row.get("implementation_statement") or "").strip() or None,
+                owner=(row.get("owner") or "").strip() or None,
+                status=(row.get("status") or "").strip() or None,
+                framework_mappings=(row.get("framework_mappings") or "").strip() or None,
+                last_reviewed=_parse_date(row.get("last_reviewed")),
+                next_review=_parse_date(row.get("next_review")),
+                confidence=(row.get("confidence") or "").strip() or None,
+                notes=(row.get("notes") or "").strip() or None,
             )
-            count += 1
-    return count
+            session.add(control)
+            created.append(control)
+    session.flush()  # assign control ids (used as knowledge_chunk source_ids)
+    return created
 
 
 def _seed_evidence(
@@ -204,17 +204,46 @@ def _seed_evidence_links(
     return links
 
 
+def _control_text(control: Control) -> str:
+    """Retrieval text for a control: its code/title plus the implementation statement."""
+    parts = [f"{control.control_code} {control.title}".strip()]
+    if control.implementation_statement:
+        parts.append(control.implementation_statement)
+    return "\n\n".join(p for p in parts if p.strip())
+
+
+def _approved_answer_text(answer: ApprovedAnswer) -> str:
+    """Retrieval text for an approved answer: the Q&A pair, so a new similar
+    question matches on the question side and the answer is available for reuse."""
+    parts: list[str] = []
+    if answer.question_text and answer.question_text.strip():
+        parts.append(f"Q: {answer.question_text.strip()}")
+    if answer.answer_text and answer.answer_text.strip():
+        parts.append(f"A: {answer.answer_text.strip()}")
+    if answer.answer_detail and answer.answer_detail.strip():
+        parts.append(answer.answer_detail.strip())
+    return "\n\n".join(parts)
+
+
 def _seed_knowledge_chunks(
     session: Session,
     org: Organization,
     profile: CompanyProfile,
     evidence: list[tuple[Evidence, bytes]],
+    controls: list[Control],
+    approved: list[ApprovedAnswer],
 ) -> int:
-    """Parse → chunk → embed the company profile and each evidence file.
+    """Parse → chunk → embed the full corpus into knowledge_chunks.
+
+    Sources, each tagged with a distinct ``source_type`` so Phase 3 retrieval can
+    search across (and weight) them and approved-answer reuse is distinguishable:
+      - ``company_profile`` — the canonical company facts (internal)
+      - ``evidence``        — uploaded attestation documents
+      - ``control``         — control implementation statements (internal)
+      - ``approved_answer`` — prior approved Q&A, retrievable reuse *candidates*
 
     Confidentiality / shareability is copied onto each chunk's metadata so Phase 3
-    retrieval and Phase 4 answer validation can filter without re-joining evidence.
-    Raw bytes are passed straight through (no storage round-trip).
+    retrieval and Phase 4 answer validation can filter without re-joining sources.
     """
     provider = get_embedding_provider()
     total = 0
@@ -243,6 +272,49 @@ def _seed_knowledge_chunks(
                 "evidence_type": ev.evidence_type,
                 "confidentiality": ev.confidentiality,
                 "customer_shareable": ev.customer_shareable,
+            },
+            provider=provider,
+        )
+    for control in controls:
+        text = _control_text(control)
+        if not text:
+            continue
+        # Control implementation statements are internal descriptions that inform a
+        # drafted answer; the answer is what goes external, so they are not shareable.
+        total += ingest_text(
+            session,
+            org_id=org.id,
+            source_type="control",
+            source_id=control.id,
+            text=text,
+            meta={
+                "title": control.title,
+                "control_code": control.control_code,
+                "domain": control.domain,
+                "confidentiality": "internal",
+                "customer_shareable": False,
+            },
+            provider=provider,
+        )
+    for answer in approved:
+        text = _approved_answer_text(answer)
+        if not text:
+            continue
+        # Already-approved external questionnaire responses: shareable, but still
+        # re-validated against current evidence before reuse (candidates, not bypass).
+        total += ingest_text(
+            session,
+            org_id=org.id,
+            source_type="approved_answer",
+            source_id=answer.id,
+            text=text,
+            meta={
+                "title": f"{answer.source} {answer.question_external_id}".strip(),
+                "source": answer.source,
+                "question_external_id": answer.question_external_id,
+                "domain": answer.domain,
+                "confidentiality": "confidential",
+                "customer_shareable": True,
             },
             provider=provider,
         )
@@ -282,9 +354,11 @@ def _read_questionnaire_rows(path: Path) -> list[dict[str, str]]:
         wb.close()
 
 
-def _seed_approved_answers(session: Session, org: Organization, seed_dir: Path) -> int:
+def _seed_approved_answers(
+    session: Session, org: Organization, seed_dir: Path
+) -> list[ApprovedAnswer]:
     q_dir = seed_dir / "questionnaires"
-    count = 0
+    created: list[ApprovedAnswer] = []
 
     caiq_path = q_dir / "CAIQ_v4_Northwind_AI.xlsx"
     if caiq_path.is_file():
@@ -292,22 +366,21 @@ def _seed_approved_answers(session: Session, org: Organization, seed_dir: Path) 
             qid = row.get("Question ID", "").strip()
             if not qid:
                 continue
-            session.add(
-                ApprovedAnswer(
-                    org_id=org.id,
-                    source="CAIQ v4.0.3",
-                    question_external_id=qid,
-                    domain=qid.split("-", 1)[0] if "-" in qid else None,
-                    question_text=row.get("Question", ""),
-                    answer_text=row.get("CSP CAIQ Answer") or None,
-                    answer_detail=row.get("CSP Implementation Description") or None,
-                    extra={
-                        "ssrm_ownership": row.get("SSRM Control Ownership") or None,
-                        "csc_responsibilities": row.get("CSC Responsibilities") or None,
-                    },
-                )
+            answer = ApprovedAnswer(
+                org_id=org.id,
+                source="CAIQ v4.0.3",
+                question_external_id=qid,
+                domain=qid.split("-", 1)[0] if "-" in qid else None,
+                question_text=row.get("Question", ""),
+                answer_text=row.get("CSP CAIQ Answer") or None,
+                answer_detail=row.get("CSP Implementation Description") or None,
+                extra={
+                    "ssrm_ownership": row.get("SSRM Control Ownership") or None,
+                    "csc_responsibilities": row.get("CSC Responsibilities") or None,
+                },
             )
-            count += 1
+            session.add(answer)
+            created.append(answer)
 
     secq_path = q_dir / "Security_Questionnaire_Northwind_AI.xlsx"
     if secq_path.is_file():
@@ -315,20 +388,20 @@ def _seed_approved_answers(session: Session, org: Organization, seed_dir: Path) 
             qid = row.get("Question ID", "").strip()
             if not qid:
                 continue
-            session.add(
-                ApprovedAnswer(
-                    org_id=org.id,
-                    source="Security Questionnaire",
-                    question_external_id=qid,
-                    domain=row.get("Domain") or None,
-                    question_text=row.get("Question", ""),
-                    answer_text=row.get("Response") or None,
-                    answer_detail=row.get("Details / Additional Information") or None,
-                    extra=None,
-                )
+            answer = ApprovedAnswer(
+                org_id=org.id,
+                source="Security Questionnaire",
+                question_external_id=qid,
+                domain=row.get("Domain") or None,
+                question_text=row.get("Question", ""),
+                answer_text=row.get("Response") or None,
+                answer_detail=row.get("Details / Additional Information") or None,
+                extra=None,
             )
-            count += 1
-    return count
+            session.add(answer)
+            created.append(answer)
+    session.flush()  # assign answer ids (used as knowledge_chunk source_ids)
+    return created
 
 
 def seed(session: Session, *, force: bool = False) -> dict:
@@ -345,17 +418,19 @@ def seed(session: Session, *, force: bool = False) -> dict:
     session.flush()
 
     profile = _seed_company_profile(session, org, seed_dir)
-    control_count = _seed_controls(session, org, seed_dir)
+    controls = _seed_controls(session, org, seed_dir)
     evidence = _seed_evidence(session, org, seed_dir)
     link_count = _seed_evidence_links(session, org, [ev for ev, _ in evidence])
-    approved_count = _seed_approved_answers(session, org, seed_dir)
-    chunk_count = _seed_knowledge_chunks(session, org, profile, evidence)
+    approved = _seed_approved_answers(session, org, seed_dir)
+    chunk_count = _seed_knowledge_chunks(
+        session, org, profile, evidence, controls, approved
+    )
 
     counts = {
-        "controls": control_count,
+        "controls": len(controls),
         "evidence": len(evidence),
         "evidence_control_links": link_count,
-        "approved_answers": approved_count,
+        "approved_answers": len(approved),
         "knowledge_chunks": chunk_count,
     }
     session.add(

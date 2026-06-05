@@ -21,7 +21,7 @@ docker compose up --build
 
 > **First `--build` is heavier.** The API image bakes in the local **BGE-M3** embedding model (~1–2 GB) at build time, so the running container needs no model download and no network at runtime. Embeddings run on **CPU** — expected and fine at demo scale. To skip the model entirely (e.g. fast CI), set `EMBEDDING_PROVIDER=hash` for a deterministic, dependency-free fake, or `EMBEDDING_PROVIDER=api` to point at an OpenAI-compatible embedding server (`MODEL_BASE_URL` / `MODEL_API_KEY`).
 
-On start the API container **applies migrations and seeds the demo company automatically** (idempotent — re-runs just skip). Seeding now also **parses, chunks, and embeds** the company profile and every evidence file into `knowledge_chunks`. Then open **http://localhost:3000** for the health page, or hit the API directly.
+On start the API container **applies migrations and seeds the demo company automatically** (idempotent — re-runs just skip). Seeding now also **parses, chunks, and embeds** the full corpus — the company profile, every evidence file, the control implementation statements, and the approved-answer library — into `knowledge_chunks`, each tagged with a distinct `source_type`. Then open **http://localhost:3000** for the health page, or hit the API directly.
 
 > **Port 3000 already in use?** The web UI's host port is configurable. Set `WEB_PORT` (e.g. `WEB_PORT=3001` in your `.env`) and open that port instead — the container-internal port stays 3000, so nothing else changes.
 
@@ -42,10 +42,10 @@ Services:
 ```json
 { "seeded": true, "org": {"name": "Northwind AI, Inc.", "slug": "northwind-ai"},
   "counts": {"controls": 30, "evidence": 5, "evidence_control_links": 38,
-             "approved_answers": 369, "knowledge_chunks": 34} }
+             "approved_answers": 369, "knowledge_chunks": 433} }
 ```
 
-`knowledge_chunks` is populated by the Phase 2 ingestion pipeline (parse → chunk → embed). The exact count depends on `CHUNK_SIZE` / `CHUNK_OVERLAP`; with the defaults the seed yields ~34 chunks across the profile and five evidence documents.
+`knowledge_chunks` is populated by the Phase 2 ingestion pipeline (parse → chunk → embed) across four `source_type`s — `company_profile`, `evidence`, `control` (implementation statements), and `approved_answer` (the prior approved Q&A, retrievable reuse candidates). The exact count depends on `CHUNK_SIZE` / `CHUNK_OVERLAP`; with the defaults the seed yields ~433 chunks (≈5 profile + 29 evidence + 30 control + 369 approved-answer).
 
 `GET /debug/summary` is an introspection endpoint, so it is **gated to non-production environments** (`APP_ENV` in `local`/`dev`/`test`). In any other environment it returns `404` — fail-closed, so it can't leak from a production deploy.
 

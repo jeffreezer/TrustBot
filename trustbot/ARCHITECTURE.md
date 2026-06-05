@@ -154,6 +154,24 @@ unsupported binary types at this boundary** rather than mishandling them. Each c
 `meta` carries `confidentiality` / `customer_shareable` copied from the source so Phase
 3 retrieval and Phase 4 answer validation can filter without re-joining evidence.
 
+### One knowledge base over four source types
+The corpus is embedded into a single `knowledge_chunks` table, each chunk tagged with a
+distinct `source_type` so Phase 3 can retrieve across — and weight — them:
+- **`company_profile`** — canonical company facts (internal).
+- **`evidence`** — uploaded attestation documents, carrying their own
+  confidentiality / shareable flags (e.g. SOC 2 = confidential-but-shareable, the
+  whitepaper = public).
+- **`control`** — control implementation statements. Embedded as `code + title +
+  statement`, tagged **internal, not customer-shareable**: a control statement *informs*
+  a drafted answer, but the drafted answer is what goes external, never the raw statement.
+- **`approved_answer`** — the prior approved Q&A library, embedded as the `Q: … / A: …`
+  pair so a new, similar question matches on the question side and the answer is right
+  there for reuse. Tagged shareable (these were real external responses) but treated as a
+  retrievable **candidate, re-validated against current evidence before emission** — never
+  an authoritative bypass (see the data-layer note above). Going through structured
+  `ingest_text()` (not the document parser) keeps these rows off the file path while
+  sharing the same chunk → embed → idempotent-upsert core.
+
 ---
 
 ## API surface & configuration

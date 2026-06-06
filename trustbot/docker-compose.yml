@@ -62,6 +62,13 @@ services:
       # stack runs with zero external setup. Set GENERATION_PROVIDER=api (+ MODEL_BASE_URL
       # / MODEL_API_KEY / GENERATION_MODEL) to draft with a real OpenAI-compatible model.
       GENERATION_PROVIDER: ${GENERATION_PROVIDER:-fake}
+      # Real-model drafting (GENERATION_PROVIDER=api|anthropic). Forwarded from the host
+      # environment / the gitignored .env so the key is NEVER written in this file — these
+      # are substitution refs, empty unless set. Compose only injects variables NAMED here
+      # into the container, so the key must be listed or the provider can't see it.
+      GENERATION_MODEL: ${GENERATION_MODEL:-}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
       # Pinned model revisions — same variables as the build args above, so the container
       # loads exactly the baked weights offline (build and runtime can never drift).
       EMBEDDING_MODEL_REVISION: ${EMBEDDING_MODEL_REVISION:-5617a9f61b028005a4858fdac845db406aefb181}

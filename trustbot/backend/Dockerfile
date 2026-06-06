@@ -44,6 +44,16 @@ ENV HF_HOME=/app/.hf_cache
 COPY bake_models.sh ./
 RUN sh bake_models.sh
 
+# Runtime is fully offline: load ONLY the weights baked above. Set AFTER the bake (which
+# needs the network). Without this, transformers/huggingface_hub PREFER safetensors and —
+# with the network open — re-download BGE-M3's ~2.2 GB auto-converted model.safetensors on
+# first load, even though the loadable pytorch_model.bin is baked and present. Offline mode
+# uses the baked .bin instead and, crucially, fails loudly if the cache is ever incomplete
+# rather than silently downloading — restoring the reproducible / pinned / tamper-evident
+# guarantee. (Both models verified to load offline from the baked cache.)
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
 # Remaining Python deps. requirements.txt pulls in requirements-models.txt via `-r`, so
 # torch and sentence-transformers are already satisfied here (no reinstall, model-bake
 # cache intact); only the app deps install. Changing requirements.txt re-runs only this

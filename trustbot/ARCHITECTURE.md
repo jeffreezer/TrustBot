@@ -147,6 +147,15 @@ runtime env, so build-time and runtime always request the same revision — othe
 offline container would try to fetch a different one and fail. The generation model is an
 external API (not a baked weight), so it needs no pinning.
 
+The image sets **`HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1`** (after the build-time bake,
+which needs the network), so the runtime loads *only* the baked weights and **fails loudly**
+if the cache is ever incomplete. This is what actually enforces the guarantee above: without
+it, `transformers` prefers `safetensors` and, with the network open, silently re-downloads
+BGE-M3's ~2.2 GB auto-converted `model.safetensors` on first load — even though the baked
+`.bin` is present and loadable — which both broke reproducibility and burned multi-GB of
+runtime network/disk per cold start. Offline mode makes the pinned, baked `.bin` the only
+thing that can load.
+
 We load the official **`.bin`** weights (`torch.load` / pickle). The pickle-execution risk
 is **bounded**: the bytes come from a *pinned, official* upstream, fixed at build time, and
 the product never loads user-supplied models. We deliberately do **not** use the

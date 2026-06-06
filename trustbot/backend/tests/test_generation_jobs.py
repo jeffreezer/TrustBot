@@ -1,19 +1,16 @@
-"""Background generation-job worker + job route — DB-backed (skips without TEST_DATABASE_URL).
+"""Background generation-job *worker* internals — DB-backed (skips without TEST_DATABASE_URL).
 
-Covers the worker's progress increments, failure path, and restart-orphan cleanup; the
-batch cap and concurrency guard at job creation; and the org-scoping of GET /jobs/{id}
-(cross-org → 404). ``generate_answer`` is stubbed, so no model/network is used.
+Covers what the routes can't reach (the async worker runs after the 202): progress
+increments, the failure path with a generic error, and restart-orphan cleanup. The HTTP
+endpoint contract (202 / 409 / 422 / 200 / 404) lives in test_generation_routes.py.
+``generate_answer`` is stubbed, so no model/network is used.
 """
 import uuid
 
-import pytest
-from fastapi import HTTPException
 from sqlalchemy import select
 
-from app.config import settings
 from app.db.models import Answer, GenerationJob, Organization, Question, Questionnaire
 from app.questionnaires import jobs, service
-from app.review_routes import get_job
 
 
 def _setup(session, *, n: int = 2) -> tuple[Organization, Questionnaire]:
@@ -95,39 +92,3 @@ def test_fail_orphaned_jobs(pg_session):
     assert running.status == "failed" and running.error == "interrupted by restart"
     assert pending.status == "failed"
     assert done.status == "done"  # terminal job left untouched
-
-
-def test_batch_cap_rejects_over_limit(pg_session, monkeypatch):
-    monkeypatch.setattr(settings, "max_generation_batch", 2)
-    org, qn = _setup(pg_session, n=3)
-    with pytest.raises(jobs.BatchTooLargeError):
-        jobs.create_generation_job(pg_session, org=org, questionnaire_id=qn.id)
-
-
-def test_concurrent_job_rejected(pg_session):
-    org, qn = _setup(pg_session, n=1)
-    jobs.create_generation_job(pg_session, org=org, questionnaire_id=qn.id)
-    pg_session.flush()
-    with pytest.raises(jobs.ConcurrentJobError):
-        jobs.create_generation_job(pg_session, org=org, questionnaire_id=qn.id)
-
-
-def test_get_job_is_org_scoped(pg_session):
-    org_a = Organization(name="A", slug=f"a-{uuid.uuid4().hex[:8]}")
-    org_b = Organization(name="B", slug=f"b-{uuid.uuid4().hex[:8]}")
-    pg_session.add_all([org_a, org_b])
-    pg_session.flush()
-    qn_b = Questionnaire(org_id=org_b.id, title="B", status="uploaded")
-    pg_session.add(qn_b)
-    pg_session.flush()
-    job_b = _add_job(pg_session, org_b, qn_b, status="running", total=5, completed=2)
-
-    # Call the route handler directly (no HTTP client dep). org A cannot see org B's job —
-    # default deny, 404 (no existence disclosure).
-    with pytest.raises(HTTPException) as exc:
-        get_job(str(job_b.id), session=pg_session, org=org_a)
-    assert exc.value.status_code == 404
-
-    # org B sees its own job.
-    body = get_job(str(job_b.id), session=pg_session, org=org_b)
-    assert body["status"] == "running" and body["total"] == 5 and body["completed"] == 2

@@ -1,3 +1,8 @@
+# Dev / test-only dependencies. NOT installed into the production image: the Dockerfile
+# installs requirements.txt (+ requirements-models.txt) only, so nothing here — e.g. httpx —
+# enters the deployed image. Set up a dev/test env with: pip install -r requirements-dev.txt
 -r requirements.txt
-pytest==8.*
-ruff==0.8.*
+pytest==9.*
+ruff==0.15.*
+# FastAPI's TestClient needs httpx — used only by the route-level API tests.
+httpx==0.28.*

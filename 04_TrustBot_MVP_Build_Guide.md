@@ -1,6 +1,8 @@
 # TrustBot — Milestone 1 Build Guide (Questionnaire Responder MVP)
 
 > Step-by-step guide to building the MVP described in `01_TrustBot_MVP_Portfolio_Plan.md`. Written to be followable without deep infrastructure experience: each phase says what to build, why, and how you'll know it's done. Lean on an AI coding assistant for the actual code — your job is to drive the sequence, understand the pieces, and keep scope tight.
+>
+> **⚠️ Course correction — read `05_TrustBot_Respond_Mode_Design.md` first.** The answer-generation guidance below was written before we caught that the responder had drifted into *reviewer* voice (surfacing auditor exceptions as verdicts; reading questionnaire pronouns from the buyer's side). `05` is the **authoritative, finalized** design for Milestone 1 answer generation — respond-mode posture, outcome taxonomy, remediation register, document access (layer 1 + audit), and auth sequencing. Where `04` and `05` conflict on how answers are drafted/classified, **`05` wins.**
 
 ---
 

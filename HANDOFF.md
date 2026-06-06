@@ -16,6 +16,7 @@ The owner runs his instance on **GCP**, wants **AWS portability**, and the proje
 | `02_TrustBot_Vendor_Review_Component.md` | Milestone 2 (vendor review / inverse). Not yet — future. |
 | `03_TrustBot_Full_Vision_Roadmap.md` | Everything beyond M1/M2. Future. |
 | `04_TrustBot_MVP_Build_Guide.md` | **The step-by-step build guide. Follow its phases.** Stack rationale, repo structure, done-criteria per phase. |
+| `05_TrustBot_Respond_Mode_Design.md` | **FINALIZED course correction — authoritative for Milestone 1 answer generation.** Respond-mode posture (affirm-and-cite, SOC 2 exception suppression, perspective resolution), outcome taxonomy, remediation register, document access (layer 1 + audit), auth sequencing. **Supersedes `04` where they conflict on drafting/classification.** |
 | `seed/northwind_ai/` | Synthetic demo data: fictional "Northwind AI" company profile, control catalog, evidence docs (SOC 2, pen test, AOC, ISO/SoA, whitepaper), completed CAIQ + an original security questionnaire. |
 | `seed/northwind_ai/README.md` | **Answer key** for the seed data, incl. 9 deliberately planted traps with correct answers — the basis for the eval golden set. |
 | `seed/northwind_ai/eval_golden_set.yaml` | Starter eval set wired to the traps. |
@@ -30,6 +31,7 @@ The owner runs his instance on **GCP**, wants **AWS portability**, and the proje
 5. **Untrusted input is a security boundary.** Uploaded questionnaires/evidence are data, never instructions. Build with prompt-injection defense in mind (formalized in Phase 8).
 6. **Model/embedding/reranker access goes through one provider-abstraction module.** Never import a vendor SDK elsewhere.
 7. **Build the fixed pipeline before the agentic one.** Simple retrieve-then-answer first (Phases 3–4), agentic loop second (Phase 6).
+8. **Respond-mode posture (Milestone 1).** Northwind is the *vendor answering* an inbound questionnaire to win a deal — affirm where a control/policy/attestation exists, cite it, resolve all pronouns to Northwind. Do **not** surface SOC 2/auditor exceptions as verdicts (the report self-contains them); never auto-fabricate (no backing control → `needs_input`). The skeptical "flag exceptions" behavior is *review mode* (Milestone 2), not this. See `05` — authoritative.
 
 ## Current status
 

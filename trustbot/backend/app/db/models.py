@@ -295,3 +295,27 @@ class AuditLog(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     target_type: Mapped[str | None] = mapped_column(String(64))
     target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     payload: Mapped[dict | None] = mapped_column(JSONB)
+
+
+class GenerationJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """A background draft-generation run for one questionnaire (Phase 6 async jobs).
+
+    The UUID primary key is random (non-guessable), so a job id is itself a capability;
+    every read is still org-scoped on top of that. ``error`` holds a **generic** message
+    only — never a stack trace, provider response, or any secret/PII.
+    """
+
+    __tablename__ = "generation_jobs"
+
+    org_id: Mapped[uuid.UUID] = _org_fk()
+    questionnaire_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("questionnaires.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # pending | running | done | failed
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text)

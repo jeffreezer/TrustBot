@@ -13,13 +13,14 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import settings
 from .db import get_session
-from .db.models import Organization
+from .db.models import GenerationJob, Organization
 from .deps import get_current_org
-from .questionnaires import QuestionnaireParseError, service
+from .questionnaires import QuestionnaireParseError, jobs, service
 
 router = APIRouter(tags=["review"])
 
@@ -98,24 +99,58 @@ class GenerateRequest(BaseModel):
     regenerate: bool = False
 
 
-@router.post("/questionnaires/{questionnaire_id}/generate")
-def generate_drafts(
+@router.post("/questionnaires/{questionnaire_id}/generate", status_code=202)
+async def start_generation(
     questionnaire_id: str,
     req: GenerateRequest | None = None,
     session: Session = Depends(get_session),
     org: Organization = Depends(get_current_org),
 ) -> dict:
+    """Start a background draft-generation job and return its id immediately (202).
+
+    Drafting runs in-process off the event loop, committing per answer; poll
+    ``GET /jobs/{job_id}`` for live N/total progress. Rejects a second concurrent job for
+    the same questionnaire (409) and a questionnaire over MAX_GENERATION_BATCH (422)."""
+    regenerate = req.regenerate if req else False
     try:
-        result = service.generate_drafts(
-            session,
-            org=org,
-            questionnaire_id=_to_uuid(questionnaire_id, "questionnaire"),
-            regenerate=(req.regenerate if req else False),
+        job = jobs.create_generation_job(
+            session, org=org, questionnaire_id=_to_uuid(questionnaire_id, "questionnaire")
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except jobs.BatchTooLargeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except jobs.ConcurrentJobError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    job_id = job.id
     session.commit()
-    return result
+    jobs.schedule_job(job_id, regenerate=regenerate)
+    return {"job_id": str(job_id)}
+
+
+@router.get("/jobs/{job_id}")
+def get_job(
+    job_id: str,
+    session: Session = Depends(get_session),
+    org: Organization = Depends(get_current_org),
+) -> dict:
+    """Poll a generation job's progress. Org-scoped: a job from another org returns 404
+    (default deny — don't disclose its existence)."""
+    job = session.scalar(
+        select(GenerationJob).where(
+            GenerationJob.id == _to_uuid(job_id, "job"),
+            GenerationJob.org_id == org.id,
+        )
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return {
+        "job_id": str(job.id),
+        "status": job.status,
+        "total": job.total,
+        "completed": job.completed,
+        "error": job.error,
+    }
 
 
 @router.get("/questions/{question_id}")

@@ -4,6 +4,9 @@ Phase 0 added /health. Phase 1 adds the data layer + a read-only /debug/summary
 that surfaces what the seed loaded. Later phases add ingestion, retrieval, answer
 generation, and the review workspace.
 """
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -12,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from .answers import generate_answer, persist_answer
 from .config import settings
-from .db import check_db, get_session
+from .db import SessionLocal, check_db, get_session
 from .db.models import (
     ApprovedAnswer,
     CompanyProfile,
@@ -24,10 +27,30 @@ from .db.models import (
     Question,
     Questionnaire,
 )
+from .questionnaires.jobs import fail_orphaned_jobs
 from .retrieval import RetrievalFilters, retrieve
 from .review_routes import router as review_router
 
-app = FastAPI(title="TrustBot API", version="0.1.0")
+logger = logging.getLogger("trustbot")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # In-process generation jobs die with the process, so on startup mark any job left
+    # pending/running by a prior process as failed — a dead job never shows as
+    # forever-running. Best-effort: never block startup on it.
+    try:
+        with SessionLocal() as session:
+            n = fail_orphaned_jobs(session)
+            session.commit()
+            if n:
+                logger.info("startup: failed %d orphaned generation job(s)", n)
+    except Exception as exc:  # noqa: BLE001 - best-effort; generic only, never a secret
+        logger.warning("startup: orphaned-job cleanup skipped (%s)", type(exc).__name__)
+    yield
+
+
+app = FastAPI(title="TrustBot API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

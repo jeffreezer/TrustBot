@@ -384,6 +384,35 @@ Two invariants protect human work: an answer whose `review_status` is **approved
 read only `superseded_at IS NULL`. Chosen over a hard delete because an evidence-backed
 review tool must be able to show *what was drafted and when*, not just the current draft.
 
+### Background generation jobs (in-process async, no external queue)
+Drafting a large questionnaire is slow (a real model call per question), so generation runs
+as a **durable, pollable background job** rather than one synchronous request. `POST
+/questionnaires/{id}/generate` creates a `generation_jobs` row (`pending`, `total` = question
+count), kicks off an in-process `asyncio` task, and returns `202 {job_id}` immediately. The
+task offloads the blocking work (model inference + HTTP) to a thread via
+`asyncio.to_thread` so the event loop stays free to serve `GET /jobs/{id}` — which returns
+`{status, total, completed, error}`, **org-scoped** (a job from another org is a 404, default
+deny). Generation commits **incrementally** (one answer at a time, supersede + new + audit
+atomic), so progress is observable and a crash at question 50 keeps the first 49; a single
+question whose model call fails (it has a per-call timeout) is left undrafted and the run
+continues. The UI polls every ~2s and shows N/total; it resumes after a refresh by re-deriving
+the active job from the questionnaire (`active_job`).
+
+Two robustness guards: only one active job per questionnaire (a second is rejected, 409), and
+a questionnaire over `MAX_GENERATION_BATCH` is rejected at the boundary so a job can't fire an
+unbounded number of blocking calls. Because the worker lives in the process, a restart kills
+it — so on startup any job left `pending`/`running` is marked `failed` ("interrupted by
+restart"); nothing shows as forever-running. `error` is always a generic string (never a
+stack trace, provider body, or secret); logs carry only the job id and exception *type*.
+
+**Deliberately not a task queue.** This is right-sized for a single-instance demo: an
+in-process task needs no Redis/Celery/RQ and no extra moving parts. Its limits are explicit —
+it assumes one app process (uvicorn default; multi-worker or horizontal scaling would need a
+shared queue + a worker pool, since a task is bound to the process that accepted the request),
+and a hard restart loses in-flight progress (recovered as a clean "failed", to be re-run). A
+real queue with durable hand-off and retries is the scaling upgrade when TrustBot runs more
+than one instance — noted here, not built.
+
 ### Export carries approval status (principle 2)
 CSV/Excel export emits `review_status` and `needs_human_review` on every row, so nothing
 reads as "final" that a human did not approve. The pure serialization (`rows_to_csv` /

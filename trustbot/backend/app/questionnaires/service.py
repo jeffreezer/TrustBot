@@ -14,6 +14,7 @@ import csv
 import hashlib
 import io
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from ..db.models import (
     AnswerReview,
     ApprovedAnswer,
     AuditLog,
+    GenerationJob,
     KnowledgeChunk,
     Organization,
     Question,
@@ -224,7 +226,33 @@ def get_questionnaire_detail(
         "title": questionnaire.title,
         "status": questionnaire.status,
         "source_format": questionnaire.source_format,
+        "active_job": _active_job(session, org, questionnaire.id),
         "questions": [_question_row(q, latest.get(q.id)) for q in questions],
+    }
+
+
+def _active_job(
+    session: Session, org: Organization, questionnaire_id: uuid.UUID
+) -> dict | None:
+    """The latest non-terminal generation job for this questionnaire, so a reopened tab
+    resumes the progress view instead of looking idle. Org-scoped."""
+    job = session.scalar(
+        select(GenerationJob)
+        .where(
+            GenerationJob.questionnaire_id == questionnaire_id,
+            GenerationJob.org_id == org.id,
+            GenerationJob.status.in_(("pending", "running")),
+        )
+        .order_by(GenerationJob.created_at.desc())
+        .limit(1)
+    )
+    if job is None:
+        return None
+    return {
+        "job_id": str(job.id),
+        "status": job.status,
+        "total": job.total,
+        "completed": job.completed,
     }
 
 
@@ -324,9 +352,17 @@ def generate_drafts(
     questionnaire_id: uuid.UUID,
     regenerate: bool = False,
     generator: GenerationProvider | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> dict:
-    """Generate a Phase-4 draft for each question (skipping already-drafted ones unless
-    ``regenerate``). Returns counts. Caller commits."""
+    """Generate a Phase-4 draft for each question, committing **incrementally**.
+
+    Each drafted answer is committed as it is produced (supersede-old + new + audit,
+    atomically), so progress is observable and a failure/restart partway keeps the work
+    already done. A single question whose generation fails (e.g. a provider timeout) is
+    left undrafted and the loop continues — it doesn't stall the whole run. ``on_progress``
+    (if given) is called with ``(processed, total)`` after each question, so a job worker
+    can report live progress. Skips already-drafted questions unless ``regenerate``;
+    approved/edited answers are never superseded."""
     questionnaire = session.scalar(
         select(Questionnaire).where(
             Questionnaire.id == questionnaire_id, Questionnaire.org_id == org.id
@@ -341,35 +377,55 @@ def generate_drafts(
     ).all()
     live = _latest_answers(session, org, questionnaire.id)  # the non-superseded answer/q
 
-    generated = 0
-    skipped = 0
-    preserved = 0
+    total = len(questions)
+    generated = skipped = preserved = failed = processed = 0
     now = datetime.now(timezone.utc)
+
+    def _tick() -> None:
+        nonlocal processed
+        processed += 1
+        if on_progress is not None:
+            on_progress(processed, total)
+
     for q in questions:
         current = live.get(q.id)
+        if current is not None and not regenerate:
+            skipped += 1
+            _tick()
+            continue
+        # Never replace human-finalized work: an approved/edited answer is left live and
+        # untouched (audit_log is likewise never superseded — auditability first).
+        if current is not None and current.review_status in PROTECTED_STATUSES:
+            preserved += 1
+            _tick()
+            continue
+        try:
+            ga = generate_answer(session, org=org, question=q.text, generator=generator)
+        except Exception:  # noqa: BLE001 - one question's failure must not stall the run
+            # Leave this question undrafted; incremental commits keep the rest. No detail
+            # is surfaced or logged here (could carry provider/PII content).
+            session.rollback()
+            failed += 1
+            _tick()
+            continue
+        # Supersede the prior draft only now that a replacement exists, so a failed draft
+        # never leaves a question with nothing live.
         if current is not None:
-            if not regenerate:
-                skipped += 1
-                continue
-            # Never replace human-finalized work: an approved/edited answer is left live
-            # and untouched (audit_log is likewise never superseded — auditability first).
-            if current.review_status in PROTECTED_STATUSES:
-                preserved += 1
-                continue
-            # Soft-supersede the prior draft (pending/rejected/needs_evidence) — keep the
-            # row for history; queries read only non-superseded answers.
             current.superseded_at = now
-        ga = generate_answer(session, org=org, question=q.text, generator=generator)
         persist_answer(session, org=org, ga=ga, question=q)
+        session.commit()  # atomic per-question: supersede + new answer + audit
         generated += 1
+        _tick()
 
     if questionnaire.status in (None, "uploaded"):
         questionnaire.status = "in_review"
+    session.commit()
     return {
         "generated": generated,
         "skipped": skipped,
         "preserved": preserved,
-        "total": len(questions),
+        "failed": failed,
+        "total": total,
     }
 
 

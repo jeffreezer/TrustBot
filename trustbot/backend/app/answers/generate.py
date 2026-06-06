@@ -153,6 +153,15 @@ def _unknown_answer(
     )
 
 
+def _normalize_ref(ref: str) -> str:
+    """Strip a model-echoed ``[ref:<id>]`` / ``ref:<id>`` / ``[<id>]`` wrapper down to the
+    bare chunk id, so a citation resolves regardless of how the model formatted it."""
+    r = ref.strip().strip("[](){}").strip()
+    if r.lower().startswith("ref:"):
+        r = r[4:]
+    return r.strip().strip("[](){}").strip()
+
+
 def generate_answer(
     session: Session,
     *,
@@ -217,6 +226,10 @@ def generate_answer(
             question, note or "Generator could not answer from the retrieved evidence.",
             generated_by,
         )
+
+    # Normalize cited refs before resolving/validating: models often echo the prompt's
+    # "[ref:<id>]" label, returning "ref:<id>" or "[<id>]" instead of the bare chunk id.
+    draft.evidence_refs = [r for r in (_normalize_ref(x) for x in draft.evidence_refs) if r]
 
     # Resolve citations to the actual retrieved chunks (org-scoped by construction).
     by_ref = {c.chunk_id: c for c in cited_all}

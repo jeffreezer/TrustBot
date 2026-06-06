@@ -99,3 +99,15 @@ def test_injection_in_cited_chunk_is_flagged(monkeypatch):
     ga = _run("Do you encrypt data at rest?")
     assert ga.needs_human_review is True
     assert "injection" in (ga.review_reason or "").lower()
+
+
+def test_normalize_ref_strips_model_echoed_label():
+    from app.answers.generate import _normalize_ref
+
+    uuid = "c61fcac9-4cc9-44a1-a97b-57cb84a77c94"
+    # Models often echo the prompt's "[ref:<id>]" label in various shapes.
+    assert _normalize_ref(f"ref:{uuid}") == uuid
+    assert _normalize_ref(f"[ref:{uuid}]") == uuid
+    assert _normalize_ref(f"[{uuid}]") == uuid
+    assert _normalize_ref(f"  {uuid}  ") == uuid
+    assert _normalize_ref(uuid) == uuid

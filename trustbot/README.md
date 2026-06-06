@@ -75,7 +75,7 @@ curl -s localhost:8000/answer -H 'content-type: application/json' \
 
 **Confidence is a composite, not the rerank score.** The rerank logit measures relevance only; the answer's `confidence` blends relevance + **source authority** + **cross-source agreement** + **question coverage**, so a fact stated verbatim in an authoritative policy scores `high` even when its rerank logit is modest. The response includes `confidence_factors` showing the breakdown.
 
-The demo runs the deterministic, grounding-only **fake** generator (`GENERATION_PROVIDER=fake`, set in compose) so the stack needs no external model and CI stays offline. For real drafting set `GENERATION_PROVIDER=api` with `MODEL_BASE_URL` / `MODEL_API_KEY` / `GENERATION_MODEL` (any OpenAI-compatible server — OpenAI, vLLM, Ollama's `/v1`). Like `/retrieve`, `/answer` returns answer text and is **gated to non-production**.
+The demo runs the deterministic, grounding-only **fake** generator (`GENERATION_PROVIDER=fake`, set in compose) so the stack needs no external model and CI stays offline. For real drafting choose a backend: **`anthropic`** (native Claude Messages API with **tool-use** to force the answer schema — set `MODEL_API_KEY`; default model `claude-sonnet-4-6`), or **`api`** for any OpenAI-compatible server (`MODEL_BASE_URL` / `MODEL_API_KEY` / `GENERATION_MODEL` — OpenAI, vLLM, Ollama's `/v1`). All three sit behind the one provider abstraction; the answers layer validates the output identically regardless. Like `/retrieve`, `/answer` returns answer text and is **gated to non-production**.
 
 The golden set can be run through this path (safety gates: unknown-fallback, no overclaim, the data-classification answer lists the four tiers and cites the policy):
 

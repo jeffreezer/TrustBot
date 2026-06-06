@@ -65,7 +65,16 @@ def get_generation_provider() -> GenerationProvider:
         return OpenAICompatibleGenerationProvider(
             settings.model_base_url,
             settings.model_api_key,
-            settings.generation_model,
+            settings.generation_model or "gpt-4o-mini",
+            temperature=settings.generation_temperature,
+            max_tokens=settings.generation_max_tokens,
+        )
+    if choice == "anthropic":
+        from .anthropic_generation import AnthropicGenerationProvider
+
+        return AnthropicGenerationProvider(
+            settings.model_api_key,
+            settings.generation_model or "claude-sonnet-4-6",
             temperature=settings.generation_temperature,
             max_tokens=settings.generation_max_tokens,
         )

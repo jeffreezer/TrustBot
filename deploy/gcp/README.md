@@ -12,7 +12,8 @@ re-run after a failure is safe).
 - Two Secret Manager secrets created (values never read/printed/committed by the script):
   - `trustbot-db-password` — the Postgres app-user password (used for the Cloud SQL user
     and injected into the services via `--set-secrets`).
-  - `trustbot-llm-key` — your model API key. **Only** wired in when `GENERATION_PROVIDER=api`.
+  - `trustbot-llm-key` — your model API key. **Only** wired in for a real-model provider
+    (`GENERATION_PROVIDER=anthropic` or `=api`); the default `fake` demo never receives it.
 
 ## Run
 
@@ -46,12 +47,15 @@ work while the **debug** routes (`/debug/summary`, `/retrieve`, `/answer`) retur
 
 ```bash
 PROJECT_ID=your-project \
-GENERATION_PROVIDER=api \
+GENERATION_PROVIDER=anthropic \
 GENERATION_MODEL=claude-sonnet-4-6 \
-MODEL_BASE_URL=https://api.anthropic.com/v1 \
 ALLOW_UNAUTH=false \
 ./deploy/gcp/deploy.sh
 ```
+
+`GENERATION_PROVIDER=anthropic` calls the native Claude Messages API with tool-use; the
+key comes from the `trustbot-llm-key` secret. (Use `=api` + `MODEL_BASE_URL` instead for
+any OpenAI-compatible endpoint.)
 
 This wires `trustbot-llm-key` into the API and deploys **locked down** (no public access —
 put IAP in front). Don't expose a real model on a public URL.

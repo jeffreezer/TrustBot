@@ -302,10 +302,16 @@ produced the weaker answer.
 
 ### Generation behind the provider abstraction; instructions ≠ data
 A `GenerationProvider` (the only place an LLM is touched) is selected by
-`GENERATION_PROVIDER`: **`api`** (OpenAI-compatible `/v1/chat/completions` via
-`MODEL_BASE_URL`/`MODEL_API_KEY`, default) or **`fake`** (a deterministic, grounding-only
-stand-in for tests/CI/demo that *cannot fabricate* — it returns `unknown` when grounding
-is insufficient). Trusted instructions go in the **system** channel; the question and
+`GENERATION_PROVIDER`: **`anthropic`** (native Claude Messages API, with **tool-use** to
+force the answer-draft schema — not prose JSON — so structured output is reliable),
+**`api`** (any OpenAI-compatible `/v1/chat/completions` via `MODEL_BASE_URL`/`MODEL_API_KEY`),
+or **`fake`** (a deterministic, grounding-only stand-in for tests/CI/demo that *cannot
+fabricate* — it returns `unknown` when grounding is insufficient). Each provider supplies
+its own default model when `GENERATION_MODEL` is empty (`claude-sonnet-4-6` / `gpt-4o-mini`).
+Because models often echo the prompt's `[ref:<id>]` citation label, the answers layer
+**normalizes cited refs** (strips a `ref:`/bracket wrapper) before resolving them, so a
+citation matches its chunk regardless of formatting. Trusted instructions go in the
+**system** channel; the question and
 retrieved evidence go in the **user** channel, fenced and labeled as data. Retrieved text
 is **data, never instructions**: `detect_injection` screens it and routes injection-like
 content to review rather than acting on it.

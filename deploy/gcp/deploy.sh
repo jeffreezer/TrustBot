@@ -43,8 +43,9 @@ API_CPU="${API_CPU:-2}"
 MAX_INSTANCES="${MAX_INSTANCES:-2}"                   # low cap to bound a public demo
 
 # Generation: this deploy uses the deterministic fake (no LLM, no key wired in). For a
-# real-model instance set GENERATION_PROVIDER=api; these defaults target Anthropic's
-# OpenAI-compatible endpoint (set the exact model id for your key).
+# real-model instance set GENERATION_PROVIDER=anthropic (native Claude Messages API +
+# tool-use; default model below) — or =api for any OpenAI-compatible endpoint via
+# MODEL_BASE_URL. Either wires the model key from the trustbot-llm-key secret.
 GENERATION_PROVIDER="${GENERATION_PROVIDER:-fake}"
 GENERATION_MODEL="${GENERATION_MODEL:-claude-sonnet-4-6}"
 MODEL_BASE_URL="${MODEL_BASE_URL:-https://api.anthropic.com/v1}"
@@ -182,9 +183,14 @@ API_ENV="APP_ENV=production,STORAGE_BACKEND=gcs,GCS_BUCKET=${BUCKET}"
 API_ENV="${API_ENV},CLOUD_SQL_INSTANCE=${INSTANCE_CONN},DB_USER=${DB_USER},DB_NAME=${DB_NAME}"
 API_ENV="${API_ENV},RUN_MIGRATIONS=false,RUN_SEED=false,SERVE=true,GENERATION_PROVIDER=${GENERATION_PROVIDER}"
 API_SECRETS="DB_PASSWORD=${DB_PASSWORD_SECRET}:latest"
-if [ "$GENERATION_PROVIDER" = "api" ]; then
-  API_ENV="${API_ENV},GENERATION_MODEL=${GENERATION_MODEL},MODEL_BASE_URL=${MODEL_BASE_URL}"
+# Real-model providers (anthropic | api) get the model + key; only the OpenAI-compatible
+# 'api' path also needs a base URL. 'fake' wires no key (no LLM in front of the demo).
+if [ "$GENERATION_PROVIDER" != "fake" ]; then
+  API_ENV="${API_ENV},GENERATION_MODEL=${GENERATION_MODEL}"
   API_SECRETS="${API_SECRETS},MODEL_API_KEY=${LLM_KEY_SECRET}:latest"
+  if [ "$GENERATION_PROVIDER" = "api" ]; then
+    API_ENV="${API_ENV},MODEL_BASE_URL=${MODEL_BASE_URL}"
+  fi
 fi
 echo ">>> Deploying $API_SERVICE"
 gcloud run deploy "$API_SERVICE" \

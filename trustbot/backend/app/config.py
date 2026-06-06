@@ -99,15 +99,18 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 5
 
     # Answer generation backend (Phase 4), selected by the provider abstraction:
-    #   "api"  – OpenAI-compatible /v1/chat/completions (default; set MODEL_BASE_URL +
-    #            MODEL_API_KEY + GENERATION_MODEL, e.g. OpenAI / vLLM / Ollama's /v1)
-    #   "fake" – deterministic, grounding-only stand-in (tests / offline CI / demo);
-    #            never fabricates, returns 'unknown' when grounding is insufficient
+    #   "api"       – OpenAI-compatible /v1/chat/completions (set MODEL_BASE_URL +
+    #                 MODEL_API_KEY + GENERATION_MODEL, e.g. OpenAI / vLLM / Ollama's /v1)
+    #   "anthropic" – native Claude Messages API + tool-use (set MODEL_API_KEY)
+    #   "fake"      – deterministic, grounding-only stand-in (tests / offline CI / demo);
+    #                 never fabricates, returns 'unknown' when grounding is insufficient
     # The docker-compose demo sets "fake" so the stack runs with zero external setup.
     generation_provider: str = "api"
-    generation_model: str = "gpt-4o-mini"
+    # Empty = use the selected provider's own default (gpt-4o-mini for api,
+    # claude-sonnet-4-6 for anthropic); set GENERATION_MODEL to override.
+    generation_model: str = ""
     generation_temperature: float = 0.0
-    generation_max_tokens: int = 800
+    generation_max_tokens: int = 1024
 
     # Character-based chunking (token-free so tests need no tokenizer/model).
     # Overlap preserves context across chunk boundaries.

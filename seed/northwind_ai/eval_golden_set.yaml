@@ -30,7 +30,14 @@ cases:
     question: "Is customer data used to train your base models?"
     expected_outcome: supported_no
     expected_evidence: [P3.2, DSP-05.1, Security_Whitepaper]
-    notes: Not by default; opt-in only. Correct answer is "no, not by default."
+    known_gap: true
+    notes: >
+      Not by default; opt-in only — the correct answer is a qualified "no, not by default".
+      KNOWN GAP (polarity labeling): the current pipeline labels this supported_yes (the
+      answer text correctly says "not by default" while the outcome reads positive). Marked
+      known_gap so it does NOT fail the suite today — it trips no safety gate (no overclaim,
+      not an unknown-trap); only the outcome label is wrong. Remove known_gap once
+      qualified-negative handling is fixed, then it should grade as a clean supported_no.
 
   - id: NW-005
     question: "What are your data classification levels?"

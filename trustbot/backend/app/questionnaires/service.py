@@ -14,6 +14,7 @@ import csv
 import hashlib
 import io
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import func, select
@@ -44,6 +45,9 @@ ACTION_STATUS: dict[str, str] = {
     "save_to_library": "approved",
 }
 REVIEW_ACTIONS = frozenset(ACTION_STATUS)
+
+# Human-finalized statuses that regenerate must never supersede or overwrite.
+PROTECTED_STATUSES = frozenset({"approved", "edited"})
 
 EXPORT_COLUMNS = [
     "id", "domain", "question", "outcome", "review_status", "needs_human_review",
@@ -138,13 +142,18 @@ def create_questionnaire(
 def _latest_answers(
     session: Session, org: Organization, questionnaire_id: uuid.UUID
 ) -> dict[uuid.UUID, Answer]:
-    """Latest answer per question for a questionnaire (a question may be regenerated)."""
+    """The live (non-superseded) answer per question for a questionnaire.
+
+    Regenerate supersedes prior drafts (see ``generate_drafts``), so there is at most one
+    non-superseded answer per question; the created_at ordering is just a defensive
+    tiebreak."""
     answers = session.scalars(
         select(Answer)
         .join(Question, Answer.question_id == Question.id)
         .where(
             Question.questionnaire_id == questionnaire_id,
             Answer.org_id == org.id,
+            Answer.superseded_at.is_(None),
         )
         .order_by(Answer.created_at.asc())
     ).all()
@@ -249,7 +258,11 @@ def get_question_detail(
         return None
     answer = session.scalar(
         select(Answer)
-        .where(Answer.question_id == question.id, Answer.org_id == org.id)
+        .where(
+            Answer.question_id == question.id,
+            Answer.org_id == org.id,
+            Answer.superseded_at.is_(None),
+        )
         .order_by(Answer.created_at.desc())
         .limit(1)
     )
@@ -326,21 +339,38 @@ def generate_drafts(
         .where(Question.questionnaire_id == questionnaire.id, Question.org_id == org.id)
         .order_by(Question.row_index.asc())
     ).all()
-    latest = _latest_answers(session, org, questionnaire.id)
+    live = _latest_answers(session, org, questionnaire.id)  # the non-superseded answer/q
 
     generated = 0
     skipped = 0
+    preserved = 0
+    now = datetime.now(timezone.utc)
     for q in questions:
-        if not regenerate and q.id in latest:
-            skipped += 1
-            continue
+        current = live.get(q.id)
+        if current is not None:
+            if not regenerate:
+                skipped += 1
+                continue
+            # Never replace human-finalized work: an approved/edited answer is left live
+            # and untouched (audit_log is likewise never superseded — auditability first).
+            if current.review_status in PROTECTED_STATUSES:
+                preserved += 1
+                continue
+            # Soft-supersede the prior draft (pending/rejected/needs_evidence) — keep the
+            # row for history; queries read only non-superseded answers.
+            current.superseded_at = now
         ga = generate_answer(session, org=org, question=q.text, generator=generator)
         persist_answer(session, org=org, ga=ga, question=q)
         generated += 1
 
     if questionnaire.status in (None, "uploaded"):
         questionnaire.status = "in_review"
-    return {"generated": generated, "skipped": skipped, "total": len(questions)}
+    return {
+        "generated": generated,
+        "skipped": skipped,
+        "preserved": preserved,
+        "total": len(questions),
+    }
 
 
 # --- review actions ---------------------------------------------------------

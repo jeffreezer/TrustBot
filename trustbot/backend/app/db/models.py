@@ -252,6 +252,10 @@ class Answer(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Human-review decision (Phase 5): pending | approved | edited | rejected |
     # needs_evidence. The audit trail of every action lives in answer_reviews + audit_log.
     review_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    # Soft-supersede: regenerate marks a prior *draft* (never an approved/edited answer)
+    # with a timestamp instead of deleting it, so history survives. NULL = the live row;
+    # exactly one non-superseded answer per question.
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     question: Mapped[Question] = relationship(back_populates="answers")
     reviews: Mapped[list[AnswerReview]] = relationship(

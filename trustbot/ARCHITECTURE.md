@@ -373,6 +373,17 @@ clears `needs_human_review`; reject / request-evidence keep it set. "Save to lib
 creates an `approved_answer` **candidate** (principle 7) — re-validated on future reuse,
 re-embedded only on reseed, never an authoritative bypass.
 
+### Regenerate supersedes drafts (soft, timestamped) — auditability over tidiness
+Re-running generation used to insert new answer rows next to the old ones, piling up stale
+drafts. Regenerate now **soft-supersedes** the prior draft instead: it stamps
+`answers.superseded_at` (migration 0005) rather than deleting the row, so history survives.
+Two invariants protect human work: an answer whose `review_status` is **approved** or
+**edited** is never superseded or replaced (the question is left as-is and skipped), and
+`audit_log` rows are never superseded or deleted. The result is **exactly one live
+(non-superseded) answer per question**; `_latest_answers` and the question/export queries
+read only `superseded_at IS NULL`. Chosen over a hard delete because an evidence-backed
+review tool must be able to show *what was drafted and when*, not just the current draft.
+
 ### Export carries approval status (principle 2)
 CSV/Excel export emits `review_status` and `needs_human_review` on every row, so nothing
 reads as "final" that a human did not approve. The pure serialization (`rows_to_csv` /

@@ -111,6 +111,12 @@ class Settings(BaseSettings):
     generation_model: str = ""
     generation_temperature: float = 0.0
     generation_max_tokens: int = 1024
+    # Per-call HTTP timeout (seconds) for the api/anthropic providers, so one stuck model
+    # call fails that question fast instead of stalling a whole batch job.
+    generation_timeout: int = 60
+    # Hard cap on questions a single generation job may draft; over this, reject at the
+    # boundary so one job can't fire an unbounded number of blocking model calls.
+    max_generation_batch: int = 200
 
     # Character-based chunking (token-free so tests need no tokenizer/model).
     # Overlap preserves context across chunk boundaries.
@@ -211,6 +217,10 @@ class Settings(BaseSettings):
             raise ValueError("GENERATION_TEMPERATURE must be >= 0.")
         if self.generation_max_tokens <= 0:
             raise ValueError("GENERATION_MAX_TOKENS must be positive.")
+        if self.generation_timeout <= 0:
+            raise ValueError("GENERATION_TIMEOUT must be positive.")
+        if self.max_generation_batch <= 0:
+            raise ValueError("MAX_GENERATION_BATCH must be positive.")
 
         return self
 

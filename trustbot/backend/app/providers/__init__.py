@@ -68,6 +68,7 @@ def get_generation_provider() -> GenerationProvider:
             settings.generation_model or "gpt-4o-mini",
             temperature=settings.generation_temperature,
             max_tokens=settings.generation_max_tokens,
+            timeout=settings.generation_timeout,
         )
     if choice == "anthropic":
         from .anthropic_generation import AnthropicGenerationProvider
@@ -77,6 +78,7 @@ def get_generation_provider() -> GenerationProvider:
             settings.generation_model or "claude-sonnet-4-6",
             temperature=settings.generation_temperature,
             max_tokens=settings.generation_max_tokens,
+            timeout=settings.generation_timeout,
         )
     if choice == "fake":
         from .fake_generator import FakeGenerationProvider

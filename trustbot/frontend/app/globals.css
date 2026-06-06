@@ -96,6 +96,28 @@ a {
   background: rgba(248, 113, 113, 0.12);
 }
 
+/* Generation progress */
+.progress {
+  margin: 0 0 1rem;
+}
+.progressLabel {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+.progressTrack {
+  height: 0.5rem;
+  background: var(--card2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.progressBar {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
 /* Buttons */
 .btn {
   display: inline-block;

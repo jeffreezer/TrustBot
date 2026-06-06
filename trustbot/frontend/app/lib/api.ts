@@ -1,5 +1,6 @@
 // Typed client for the TrustBot review-workspace API.
 import type {
+  JobStatus,
   QuestionDetail,
   QuestionnaireDetail,
   QuestionnaireSummary,
@@ -39,15 +40,15 @@ export const api = {
 
   getQuestion: (id: string) => request<QuestionDetail>(`/questions/${id}`),
 
+  // Starts a background job; returns immediately with the job id (202).
   generate: (id: string, regenerate = false) =>
-    request<{ generated: number; skipped: number; total: number }>(
-      `/questionnaires/${id}/generate`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ regenerate }),
-      },
-    ),
+    request<{ job_id: string }>(`/questionnaires/${id}/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ regenerate }),
+    }),
+
+  getJob: (jobId: string) => request<JobStatus>(`/jobs/${jobId}`),
 
   review: (answerId: string, body: ReviewBody) =>
     request<{ answer_id: string; review_status: string; needs_human_review: boolean }>(

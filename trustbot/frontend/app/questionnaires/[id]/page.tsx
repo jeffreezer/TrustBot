@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "../../lib/api";
 import type {
   Citation,
+  JobStatus,
   QuestionDetail,
   QuestionnaireDetail,
   QuestionRow,
@@ -55,11 +56,21 @@ export default function Workspace() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [job, setJob] = useState<JobStatus | null>(null);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
 
   const loadDetail = useCallback(async () => {
     try {
-      setDetail(await api.getQuestionnaire(id));
+      const d = await api.getQuestionnaire(id);
+      setDetail(d);
       setError(null);
+      // Resume a running job after a page refresh (don't clobber an in-flight poll).
+      if (d.active_job) {
+        const aj = d.active_job;
+        setActiveJobId((cur) => cur ?? aj.job_id);
+        setJob((cur) => cur ?? { ...aj, error: null });
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load questionnaire");
     }
@@ -71,6 +82,7 @@ export default function Workspace() {
 
   const selectQuestion = useCallback(async (questionId: string) => {
     setSelectedId(questionId);
+    selectedIdRef.current = questionId;
     setQd(null);
     try {
       const data = await api.getQuestion(questionId);
@@ -81,20 +93,54 @@ export default function Workspace() {
     }
   }, []);
 
-  const generate = useCallback(async () => {
-    setBusy(true);
-    setMessage(null);
-    try {
-      const r = await api.generate(id);
-      setMessage(`Generated ${r.generated} draft(s), skipped ${r.skipped}.`);
-      await loadDetail();
-      if (selectedId) await selectQuestion(selectedId);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Generation failed");
-    } finally {
-      setBusy(false);
-    }
-  }, [id, loadDetail, selectQuestion, selectedId]);
+  // Poll the active job every ~2s until it finishes; then refresh the answers. Survives a
+  // refresh because activeJobId is re-derived from the questionnaire's active_job above.
+  useEffect(() => {
+    if (!activeJobId) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const j = await api.getJob(activeJobId);
+        if (cancelled) return;
+        setJob(j);
+        if (j.status === "done" || j.status === "failed") {
+          setActiveJobId(null);
+          if (j.status === "failed") setError(j.error || "Generation failed");
+          else setMessage(`Drafted ${j.completed} / ${j.total}.`);
+          await loadDetail();
+          if (selectedIdRef.current) await selectQuestion(selectedIdRef.current);
+          return;
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setActiveJobId(null);
+          setError(e instanceof Error ? e.message : "Lost contact with the job");
+        }
+        return;
+      }
+      if (!cancelled) setTimeout(tick, 2000);
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeJobId, loadDetail, selectQuestion]);
+
+  const generate = useCallback(
+    async (regenerate: boolean) => {
+      setError(null);
+      setMessage(null);
+      try {
+        const { job_id } = await api.generate(id, regenerate);
+        setJob({ job_id, status: "pending", total: 0, completed: 0, error: null });
+        setActiveJobId(job_id);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not start generation");
+      }
+    },
+    [id],
+  );
 
   const act = useCallback(
     async (action: ReviewAction) => {
@@ -121,6 +167,8 @@ export default function Workspace() {
 
   const answer = qd?.answer ?? null;
   const undrafted = detail?.questions.filter((q) => q.status === "undrafted").length ?? 0;
+  const generating = job?.status === "pending" || job?.status === "running";
+  const pct = job && job.total > 0 ? Math.round((job.completed / job.total) * 100) : 0;
 
   return (
     <div className="page">
@@ -132,8 +180,16 @@ export default function Workspace() {
           <h1 className="brand">{detail?.title ?? "Workspace"}</h1>
         </div>
         <div className="appbarActions">
-          <button className="btn primary" onClick={generate} disabled={busy}>
-            {busy ? "Working…" : undrafted > 0 ? `Generate ${undrafted} draft(s)` : "Regenerate"}
+          <button
+            className="btn primary"
+            onClick={() => void generate(undrafted === 0)}
+            disabled={generating || busy}
+          >
+            {generating
+              ? "Drafting…"
+              : undrafted > 0
+                ? `Generate ${undrafted} draft(s)`
+                : "Regenerate all"}
           </button>
           <a className="btn" href={api.exportUrl(id, "csv")}>
             Export CSV
@@ -144,6 +200,16 @@ export default function Workspace() {
         </div>
       </header>
 
+      {generating && (
+        <div className="progress">
+          <div className="progressLabel">
+            Drafting… {job?.completed ?? 0} / {job?.total ?? 0}
+          </div>
+          <div className="progressTrack">
+            <div className="progressBar" style={{ width: `${pct}%` }} />
+          </div>
+        </div>
+      )}
       {error && <p className="bad banner">{error}</p>}
       {message && <p className="ok banner">{message}</p>}
 

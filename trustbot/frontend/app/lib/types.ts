@@ -23,12 +23,30 @@ export type QuestionRow = {
   needs_human_review: boolean | null;
 };
 
+export type JobStatusValue = "pending" | "running" | "done" | "failed";
+
+export type ActiveJob = {
+  job_id: string;
+  status: JobStatusValue;
+  total: number;
+  completed: number;
+};
+
 export type QuestionnaireDetail = {
   id: string;
   title: string;
   status: string;
   source_format: string | null;
+  active_job: ActiveJob | null;
   questions: QuestionRow[];
+};
+
+export type JobStatus = {
+  job_id: string;
+  status: JobStatusValue;
+  total: number;
+  completed: number;
+  error: string | null;
 };
 
 export type EvidenceRef = {

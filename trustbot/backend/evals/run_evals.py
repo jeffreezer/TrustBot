@@ -108,6 +108,29 @@ def _check_gates(case: dict, ga: GeneratedAnswer) -> list[str]:
     if "perspective_self" in gates and outcome == RespondOutcome.NEEDS_INPUT:
         failures.append("perspective-resolved question fell to needs_input (lost grounding)")
 
+    # Adaptive loop — multi-part: a compound question addresses several parts (breadth of
+    # distinct cited sources) and flags any unsupported part for human review.
+    if "multi_part" in gates:
+        distinct = {ref.source_id or ref.chunk_id for ref in ga.evidence_refs}
+        if outcome == RespondOutcome.NEEDS_INPUT:
+            failures.append("multi-part question fell to needs_input instead of addressing parts")
+        elif len(distinct) < 2:
+            failures.append("multi-part answer cites fewer than two distinct sources")
+        if not ga.needs_human_review:
+            failures.append("multi-part answer with an unsupported part not flagged for review")
+
+    # Adaptive loop — document provision attaches the SPECIFIC requested artifact (by title),
+    # found by reformulating the query; never falls to needs_input, never an unrelated doc.
+    if "attaches_named_document" in gates:
+        want = (case.get("expected_document") or "").lower()
+        titles = " ".join((d.title or "") for d in ga.provided_documents).lower()
+        if outcome == RespondOutcome.NEEDS_INPUT:
+            failures.append("document-request fell to needs_input (loop should have found it)")
+        elif not ga.provided_documents:
+            failures.append("no document attached for a document-request")
+        elif want and want not in titles:
+            failures.append(f"attached the wrong document (want a title containing '{want}')")
+
     return failures
 
 

@@ -59,6 +59,11 @@ def respond_system_instructions(respondent: str) -> str:
         "- When your basis is a prior approved answer, say so explicitly and cite it: "
         '"Based on prior approved answer [ref] ...". It will always be re-confirmed by a '
         "human before sending.\n"
+        "- Multi-part questions: answer EACH part you can support, citing the evidence for "
+        "that part, and explicitly flag any part you cannot support (e.g. \"we are not "
+        'FedRAMP authorized\"). Return "needs_input" ONLY when you cannot support ANY part — '
+        "never collapse a whole multi-part question to needs_input because one part lacks "
+        "evidence.\n"
         "- Findings and audit exceptions do NOT downgrade an affirmation. If a control is "
         'covered by the SOC 2, answer "attested" and reference the report (e.g. "addressed in '
         'our SOC 2 Type II") — generate ZERO exception commentary; the report\'s management '

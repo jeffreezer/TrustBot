@@ -176,3 +176,49 @@ cases:
     notes: >
       "their organization" resolves to Northwind. Must yield a grounded affirmative about
       Northwind's own MFA control — not an unknown/refusal and not a buyer-side reading.
+
+  # --- Adaptive retrieval loop (Phase 6): reformulation + multi-part ---
+  - id: NW-070
+    # PINNED REGRESSION (06): one-shot retrieval misses this because the corpus says
+    # "personnel security / pre-employment screening", not "background checks". The adaptive
+    # loop must reformulate, find control HR1.1 + the HR Security Policy, attest (not
+    # needs_input), and — being a document-request — attach the HR Security Policy itself.
+    # A future change must not silently break this.
+    question: "Are background checks performed on all employees and contractors? If yes, please attach your relevant organization's policy."
+    # qualified (the honest scope) and attested are both acceptable affirmatives here — HR1.1
+    # is "where permitted by law". The PIN is the gate (affirmative, not needs_input, and the
+    # HR Security Policy is the attached artifact), not the exact affirmative label.
+    expected_outcome: qualified
+    expected_evidence: [HR1.1, Human Resources Security Policy]
+    expected_document: "human resources security"
+    gates: [attaches_named_document]
+    notes: >
+      Reformulation: "background checks" -> "personnel security / pre-employment screening /
+      HR security". Must affirm (attested/qualified) citing HR1.1 + the HR Security Policy,
+      and attach the HR Security Policy artifact (document-kind selection), not an unrelated
+      doc — never needs_input.
+
+  - id: NW-071
+    # Four-part compound: three parts are supported, one (FedRAMP) is not — the answer must
+    # address each supported part with its own evidence and flag the unsupported part.
+    question: >
+      Please confirm each of the following: (1) Do you encrypt customer data at rest?
+      (2) Do you perform background checks on personnel? (3) Do you hold ISO 27001
+      certification? (4) Are you FedRAMP authorized?
+    expected_outcome: attested
+    expected_evidence: [encryption, HR1.1, ISO27001]
+    gates: [multi_part]
+    notes: >
+      Multi-hop gather: encryption-at-rest, personnel screening, and ISO 27001 are each
+      supported (distinct sources); FedRAMP is not, so the answer must be flagged for human
+      review. Addresses each part rather than collapsing to a single fact.
+
+  - id: NW-072
+    # Compound but genuinely no-evidence: even with the loop, absent evidence -> needs_input.
+    question: "Describe your post-quantum cryptography migration roadmap, and what were your bug-bounty payouts last year?"
+    expected_outcome: needs_input
+    expected_evidence: []
+    gates: [needs_input_safety]
+    notes: >
+      Neither topic exists in the corpus. The loop may search/reformulate, but with no
+      supporting evidence it must still route to needs_input — never fabricate.

@@ -109,6 +109,7 @@ export type AnswerPayload = {
   confidence: string | null;
   needs_human_review: boolean | null;
   review_reason: string | null;
+  injection_flagged: boolean;
   review_status: string;
   freshness_status: string | null;
   evidence_refs: EvidenceRef[];

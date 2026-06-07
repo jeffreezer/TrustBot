@@ -145,6 +145,30 @@ def validate_shareability(
     return []
 
 
+# System-prompt / internal-instruction phrases that must never appear in a customer-facing
+# answer (Phase 8, layer 4). An injection that tries to make the model echo its instructions
+# or leak the redaction marker is caught here as an output check.
+_LEAKAGE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"you are trustbot", re.IGNORECASE),
+    re.compile(r"system prompt|system instructions?", re.IGNORECASE),
+    re.compile(r"these (?:are )?(?:my|the) instructions", re.IGNORECASE),
+    re.compile(r"⟦redacted-injection⟧"),  # the neutralization marker must not surface
+    re.compile(r"\bRULES:\B|ANSWER ONLY from the EVIDENCE", re.IGNORECASE),
+)
+
+
+def validate_no_system_leakage(draft: AnswerDraft) -> list[str]:
+    """The answer must not echo system-prompt / internal-instruction content (Phase 8, layer
+    4): an injection that tries to exfiltrate or parrot the system instructions is caught as
+    an output check, complementing the shareability check on cited evidence."""
+    if draft.outcome not in RESPOND_DRAFTED:
+        return []
+    text = f"{draft.short_answer}\n{draft.answer}\n{draft.claim}\n{draft.scope}"
+    if any(p.search(text) for p in _LEAKAGE_PATTERNS):
+        return ["answer contains system-prompt / internal-instruction content (possible leakage)"]
+    return []
+
+
 def run_review_checks(
     draft: AnswerDraft,
     cited: Sequence[CitedEvidence],
@@ -159,6 +183,7 @@ def run_review_checks(
     reasons += validate_citations(draft, grounding_refs)
     reasons += validate_certifications(draft, available_certs)
     reasons += validate_shareability(cited, customer_facing=customer_facing)
+    reasons += validate_no_system_leakage(draft)
     return reasons
 
 
@@ -173,5 +198,6 @@ __all__ = [
     "validate_citations",
     "validate_certifications",
     "validate_shareability",
+    "validate_no_system_leakage",
     "run_review_checks",
 ]

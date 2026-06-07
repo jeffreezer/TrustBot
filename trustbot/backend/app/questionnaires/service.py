@@ -331,6 +331,8 @@ def _answer_payload(session: Session, org: Organization, answer: Answer) -> dict
         "confidence": answer.confidence,
         "needs_human_review": answer.needs_human_review,
         "review_reason": answer.review_reason,
+        # Phase 8: injection-like content detected (question/evidence), neutralized + flagged.
+        "injection_flagged": answer.injection_flagged,
         "review_status": answer.review_status,
         "freshness_status": answer.freshness_status,
         "evidence_refs": answer.evidence_refs or [],

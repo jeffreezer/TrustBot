@@ -8,7 +8,11 @@ human review — TrustBot treats such content as data and never acts on it.
 """
 from __future__ import annotations
 
-import re
+# Injection screening lives in the dedicated security module (Phase 8, layer 2); re-exported
+# for the answer pipeline. ``detect_injection`` is the boolean screen, ``screen`` returns a
+# structured finding, and ``neutralize`` redacts matched directives before text reaches the
+# model.
+from ..security.injection import detect_injection, neutralize, screen
 
 # Review-mode (Milestone 2) prompt — parked; the respond pipeline uses the builder below.
 SYSTEM_INSTRUCTIONS = (
@@ -93,23 +97,11 @@ def decompose_instructions(respondent: str) -> str:
     )
 
 
-# Injection-like patterns. Conservative: these screen *retrieved evidence* (data), so a
-# match means "a human should look", not "execute". Kept simple and explainable.
-_INJECTION_PATTERNS = (
-    r"ignore (?:all |any |the )?(?:previous|prior|above) instructions",
-    r"disregard (?:all |any |the )?(?:previous|prior|above)",
-    r"forget (?:everything|all|the above|previous)",
-    r"you are now ",
-    r"new instructions:",
-    r"system prompt",
-    r"override (?:your |the )?(?:instructions|rules|system)",
-    r"pretend to be ",
-    r"act as (?:if|a|an) ",
-    r"do not tell (?:the )?(?:user|human|reviewer)",
-)
-_INJECTION_RE = re.compile("|".join(_INJECTION_PATTERNS), re.IGNORECASE)
-
-
-def detect_injection(text: str) -> bool:
-    """True if retrieved text contains injection-like instruction phrasing."""
-    return bool(_INJECTION_RE.search(text or ""))
+__all__ = [
+    "SYSTEM_INSTRUCTIONS",
+    "respond_system_instructions",
+    "decompose_instructions",
+    "detect_injection",
+    "screen",
+    "neutralize",
+]

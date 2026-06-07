@@ -48,6 +48,8 @@ from .db.models import (
 from .ingestion import ingest_document, ingest_text
 from .providers import get_embedding_provider
 from .questionnaires.service import create_questionnaire
+from .security import policy_for_mode, screen
+from .security.quarantine import apply_ingestion_policy
 from .storage import get_storage, sanitize_filename
 
 ORG_NAME = "Northwind AI, Inc."
@@ -385,6 +387,23 @@ def _approved_answer_text(answer: ApprovedAnswer) -> str:
     return "\n\n".join(parts)
 
 
+def _screen_at_ingestion(
+    session: Session, evidence: Evidence, data: bytes, filename: str | None
+) -> bool:
+    """Phase 8 boundary screen at document ingestion. Applies the ingestion posture's policy
+    (respond → flag + keep retrievable; review → quarantine + exclude). Returns True if the
+    document's chunks should be created, False if it was quarantined (no chunks)."""
+    if not settings.injection_screening_enabled:
+        return True
+    finding = screen(data.decode("utf-8", "ignore"), filename=filename)
+    if finding is None:
+        return True
+    decision = apply_ingestion_policy(
+        session, evidence, finding, policy_for_mode("respond"), actor="system:seed"
+    )
+    return decision != "quarantined"
+
+
 def _seed_knowledge_chunks(
     session: Session,
     org: Organization,
@@ -421,6 +440,8 @@ def _seed_knowledge_chunks(
         provider=provider,
     )
     for ev, data in evidence:
+        if not _screen_at_ingestion(session, ev, data, ev.original_filename):
+            continue  # quarantined at the boundary — content excluded from the KB
         total += ingest_document(
             session,
             org_id=org.id,
@@ -438,6 +459,8 @@ def _seed_knowledge_chunks(
             provider=provider,
         )
     for ev, data, _codes in policies:
+        if not _screen_at_ingestion(session, ev, data, ev.original_filename):
+            continue  # quarantined at the boundary — content excluded from the KB
         total += ingest_document(
             session,
             org_id=org.id,

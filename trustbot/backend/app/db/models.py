@@ -130,7 +130,14 @@ class Evidence(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # confidentiality + customer_shareable gate what may appear in external answers.
     confidentiality: Mapped[str] = mapped_column(String(32), nullable=False, default="internal")
     customer_shareable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # active | quarantined | archived. Phase 8: a document whose content screened as
+    # injection-like is set "quarantined" under the review-mode policy — its chunks are removed
+    # from the retrievable KB until an explicit human release. injection_flagged records the
+    # detection (respond mode keeps it retrievable + flagged); injection_snippet is a short
+    # metadata-only excerpt for the reviewer (never the full poisoned content in logs).
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    injection_flagged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    injection_snippet: Mapped[str | None] = mapped_column(String(512))
     version: Mapped[str | None] = mapped_column(String(64))
     valid_from: Mapped[date | None] = mapped_column(Date)
     valid_until: Mapped[date | None] = mapped_column(Date)
@@ -272,6 +279,9 @@ class Answer(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # {sub_question, outcome, short_answer, answer, evidence_refs, needs_human_review,
     # review_reason}. Empty for a single-part answer.
     sub_answers: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # Phase 8: injection-like content was detected (question or cited evidence), neutralized,
+    # and flagged. The answer was still produced; the snippet is carried in review_reason.
+    injection_flagged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Defaults to True: nothing is externally usable until a human signs off.
     needs_human_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     review_reason: Mapped[str | None] = mapped_column(Text)

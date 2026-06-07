@@ -11,6 +11,7 @@ bucket, so a crafted key like ``../../etc/passwd`` cannot escape its namespace.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 
 
 class StorageError(Exception):
@@ -46,6 +47,25 @@ def safe_object_key(key: str) -> str:
     return "/".join(segments)
 
 
+def object_key_from_storage_path(storage_path: str) -> str:
+    """Recover the object key from a canonical storage_path URI.
+
+    ``put`` returns ``file://<key>`` / ``s3://<bucket>/<key>`` / ``gs://<bucket>/<key>``;
+    this reverses that so a stored ``storage_path`` can be streamed. The recovered key is
+    re-validated by ``safe_object_key`` inside the adapter, so a tampered path still can't
+    traverse out of its namespace.
+    """
+    if not storage_path or not storage_path.strip():
+        raise UnsafeKeyError("empty storage_path")
+    if storage_path.startswith("file://"):
+        return storage_path[len("file://") :]
+    for scheme in ("s3://", "gs://"):
+        if storage_path.startswith(scheme):
+            _bucket, _sep, key = storage_path[len(scheme) :].partition("/")
+            return key
+    return storage_path  # already a bare key
+
+
 def sanitize_filename(name: str) -> str:
     """Reduce an arbitrary filename to a single safe path segment."""
     leaf = name.replace("\\", "/").rsplit("/", 1)[-1].strip()
@@ -68,6 +88,11 @@ class StorageAdapter(ABC):
     @abstractmethod
     def get(self, key: str) -> bytes:
         """Return the stored bytes for ``key``."""
+
+    @abstractmethod
+    def get_object_stream(self, key: str) -> Iterator[bytes]:
+        """Yield the object's bytes in chunks, for streaming a download without buffering
+        the whole file in memory. The key is re-validated for traversal first."""
 
     @abstractmethod
     def exists(self, key: str) -> bool:

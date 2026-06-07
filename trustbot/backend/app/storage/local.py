@@ -5,9 +5,12 @@ key cannot write or read outside the storage root.
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 from .base import StorageAdapter, StorageError, safe_object_key
+
+_STREAM_CHUNK = 64 * 1024
 
 
 class LocalStorage(StorageAdapter):
@@ -31,6 +34,19 @@ class LocalStorage(StorageAdapter):
 
     def get(self, key: str) -> bytes:
         return self._resolve(key).read_bytes()
+
+    def get_object_stream(self, key: str) -> Iterator[bytes]:
+        target = self._resolve(key)
+
+        def _iter() -> Iterator[bytes]:
+            with target.open("rb") as fh:
+                while True:
+                    chunk = fh.read(_STREAM_CHUNK)
+                    if not chunk:
+                        break
+                    yield chunk
+
+        return _iter()
 
     def exists(self, key: str) -> bool:
         return self._resolve(key).is_file()

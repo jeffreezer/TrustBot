@@ -15,11 +15,14 @@ Two cloud-specific notes:
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import timedelta
 from functools import cached_property
 
 from ..config import settings
 from .base import StorageAdapter, safe_object_key
+
+_STREAM_CHUNK = 64 * 1024
 
 
 class GCSStorage(StorageAdapter):
@@ -49,6 +52,19 @@ class GCSStorage(StorageAdapter):
 
     def get(self, key: str) -> bytes:
         return self._bucket.blob(safe_object_key(key)).download_as_bytes()
+
+    def get_object_stream(self, key: str) -> Iterator[bytes]:
+        blob = self._bucket.blob(safe_object_key(key))
+
+        def _iter() -> Iterator[bytes]:
+            with blob.open("rb") as fh:
+                while True:
+                    chunk = fh.read(_STREAM_CHUNK)
+                    if not chunk:
+                        break
+                    yield chunk
+
+        return _iter()
 
     def exists(self, key: str) -> bool:
         return self._bucket.blob(safe_object_key(key)).exists()

@@ -275,11 +275,56 @@ export default function Workspace() {
                     onChange={(e) => setEditText(e.target.value)}
                     rows={10}
                   />
-                  {answer.exceptions && (
-                    <p className="exceptions">
-                      <strong>Exception:</strong> {answer.exceptions}
-                    </p>
+                  {answer.provided_documents && answer.provided_documents.length > 0 && (
+                    <div className="providedDocs">
+                      <strong>
+                        Attached document
+                        {answer.provided_documents.length > 1 ? "s" : ""}:
+                      </strong>
+                      <ul>
+                        {answer.provided_documents.map((d) => (
+                          <li key={d.document_id}>
+                            <a
+                              href={api.documentUrl(d.download_url)}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              {d.title || "Document"}
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   )}
+                  {answer.remediation_required &&
+                    answer.findings &&
+                    answer.findings.length > 0 && (
+                      <div className="remediation">
+                        <strong>Remediation status</strong>
+                        <ul>
+                          {answer.findings.map((f) => (
+                            <li key={f.id}>
+                              <span className="findingRef">
+                                {f.external_ref || "Finding"}
+                              </span>{" "}
+                              {f.severity && <span className="sev">{f.severity}</span>}{" "}
+                              <span className="findingStatus">
+                                {f.status.replace(/_/g, " ")}
+                              </span>
+                              {(f.status === "open" || f.status === "in_progress") &&
+                              f.target_remediation_date
+                                ? ` — target ${f.target_remediation_date}`
+                                : f.remediated_date
+                                  ? ` — remediated ${f.remediated_date}`
+                                  : ""}
+                              {f.remediation_summary ? (
+                                <div className="muted">{f.remediation_summary}</div>
+                              ) : null}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
 
                   <div className="reviewerRow">
                     <label>Reviewer</label>
@@ -318,7 +363,7 @@ export default function Workspace() {
             <p className="muted">—</p>
           ) : qd.citations.length === 0 ? (
             <p className="muted">
-              No citations. {answer?.outcome === "unknown" ? "Flagged as unknown / needs review." : ""}
+              No citations. {answer?.outcome === "needs_input" ? "Flagged as needs-input / needs review." : ""}
             </p>
           ) : (
             qd.citations.map((c) => <CitationCard key={c.chunk_id} c={c} />)

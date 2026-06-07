@@ -8,7 +8,14 @@ from __future__ import annotations
 from functools import lru_cache
 
 from ..config import settings
-from .base import StorageAdapter, StorageError, UnsafeKeyError, safe_object_key, sanitize_filename
+from .base import (
+    StorageAdapter,
+    StorageError,
+    UnsafeKeyError,
+    object_key_from_storage_path,
+    safe_object_key,
+    sanitize_filename,
+)
 
 
 @lru_cache(maxsize=1)
@@ -36,4 +43,5 @@ __all__ = [
     "UnsafeKeyError",
     "safe_object_key",
     "sanitize_filename",
+    "object_key_from_storage_path",
 ]

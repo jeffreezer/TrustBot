@@ -12,6 +12,7 @@ import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -21,6 +22,7 @@ from .db import get_session
 from .db.models import GenerationJob, Organization
 from .deps import get_current_org
 from .questionnaires import QuestionnaireParseError, jobs, service
+from .storage import get_storage, sanitize_filename
 
 router = APIRouter(tags=["review"])
 
@@ -30,6 +32,12 @@ def _to_uuid(value: str, what: str) -> uuid.UUID:
         return uuid.UUID(value)
     except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail=f"invalid {what} id") from None
+
+
+def _client_ip(request: Request) -> str | None:
+    """The direct peer address for the audit trail. X-Forwarded-For is intentionally NOT
+    trusted (a client can spoof it); the proxy hop is acceptable for an access record."""
+    return request.client.host if request.client else None
 
 
 @router.post("/questionnaires")
@@ -201,6 +209,40 @@ def review_answer(
         "review_status": answer.review_status,
         "needs_human_review": answer.needs_human_review,
     }
+
+
+@router.get("/documents/{document_id}/download")
+def download_document(
+    document_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    org: Organization = Depends(get_current_org),
+) -> StreamingResponse:
+    """Stream a customer-shareable document referenced by an approved answer (05 §8).
+
+    Org-scoped and fail-closed: a document from another org, one that isn't shareable, or
+    one not yet referenced by an approved answer all return 404 (default deny — never a
+    bearer/signed link, never an existence leak). The access is audited (metadata only)
+    before the bytes are streamed.
+    """
+    try:
+        evidence, key = service.prepare_document_download(
+            session,
+            org=org,
+            document_id=_to_uuid(document_id, "document"),
+            client_ip=_client_ip(request),
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="document not found") from exc
+    session.commit()  # persist the audit record before serving any bytes
+
+    stream = get_storage().get_object_stream(key)
+    filename = sanitize_filename(evidence.original_filename or "document")
+    return StreamingResponse(
+        stream,
+        media_type=evidence.content_type or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/questionnaires/{questionnaire_id}/export")

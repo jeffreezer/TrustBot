@@ -27,6 +27,7 @@ from ..db.models import (
     AnswerReview,
     ApprovedAnswer,
     AuditLog,
+    Evidence,
     Finding,
     GenerationJob,
     KnowledgeChunk,
@@ -35,7 +36,7 @@ from ..db.models import (
     Questionnaire,
 )
 from ..providers import GenerationProvider
-from ..storage import get_storage, sanitize_filename
+from ..storage import get_storage, object_key_from_storage_path, sanitize_filename
 from .parse import parse_questionnaire
 
 # Reviewer actions → the review_status they transition the answer to. "save_to_library"
@@ -565,6 +566,57 @@ def _save_to_library(session: Session, org: Organization, answer: Answer) -> Non
             extra={"from_answer_id": str(answer.id), "candidate": True},
         )
     )
+
+
+# --- document access --------------------------------------------------------
+
+def prepare_document_download(
+    session: Session,
+    *,
+    org: Organization,
+    document_id: uuid.UUID,
+    client_ip: str | None = None,
+    actor: str = "user:download",
+) -> tuple[Evidence, str]:
+    """Authorize a document download and record the access; caller streams + commits.
+
+    Defense in depth (05 §8): every check is org-scoped and **fails closed to 404** — a
+    document that belongs to another org, isn't customer-shareable, or isn't referenced by
+    an approved answer is indistinguishable from one that doesn't exist (no existence leak,
+    default deny). On success we write a ``document.download`` audit row carrying metadata
+    only (who/org, document id, ip, timestamp) — never the document bytes.
+    """
+    evidence = session.scalar(
+        select(Evidence).where(Evidence.id == document_id, Evidence.org_id == org.id)
+    )
+    if evidence is None or not evidence.customer_shareable:
+        raise LookupError("document not found")
+
+    # The document must be referenced by an APPROVED answer (a human signed off on
+    # providing it) — being shareable alone is not enough to expose the bytes.
+    referenced = session.scalar(
+        select(Answer.id)
+        .where(
+            Answer.org_id == org.id,
+            Answer.review_status == "approved",
+            Answer.provided_documents.contains([{"document_id": str(document_id)}]),
+        )
+        .limit(1)
+    )
+    if referenced is None:
+        raise LookupError("document not found")
+
+    session.add(
+        AuditLog(
+            org_id=org.id,
+            actor=actor,
+            action="document.download",
+            target_type="document",
+            target_id=evidence.id,
+            payload={"document_id": str(evidence.id), "ip": client_ip},
+        )
+    )
+    return evidence, object_key_from_storage_path(evidence.storage_path)
 
 
 # --- export -----------------------------------------------------------------

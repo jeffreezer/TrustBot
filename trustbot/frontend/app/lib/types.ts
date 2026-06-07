@@ -56,14 +56,36 @@ export type EvidenceRef = {
   title: string | null;
 };
 
+export type ProvidedDocument = {
+  document_id: string;
+  title: string | null;
+  download_url: string;
+};
+
+export type Finding = {
+  id: string;
+  external_ref: string | null;
+  title: string | null;
+  severity: string | null;
+  status: string;
+  identified_date: string | null;
+  target_remediation_date: string | null;
+  remediated_date: string | null;
+  remediation_summary: string | null;
+};
+
 export type AnswerPayload = {
   id: string;
+  mode: string | null;
   outcome: string | null;
   short_answer: string | null;
   answer: string | null;
   claim: string | null;
   scope: string | null;
-  exceptions: string | null;
+  requires_document: boolean | null;
+  provided_documents: ProvidedDocument[];
+  remediation_required: boolean | null;
+  findings: Finding[];
   confidence: string | null;
   needs_human_review: boolean | null;
   review_reason: string | null;

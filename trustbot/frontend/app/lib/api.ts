@@ -72,4 +72,7 @@ export const api = {
 
   exportUrl: (id: string, format: "csv" | "xlsx") =>
     `${API_URL}/questionnaires/${id}/export?format=${format}`,
+
+  // Absolute URL for an org-scoped, audited document download (server gives a relative path).
+  documentUrl: (path: string) => `${API_URL}${path}`,
 };

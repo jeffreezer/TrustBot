@@ -10,6 +10,7 @@ Secure defaults:
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from functools import cached_property
 
 import boto3
@@ -63,6 +64,11 @@ class S3Storage(StorageAdapter):
         safe_key = safe_object_key(key)
         resp = self._client.get_object(Bucket=self.bucket, Key=safe_key)
         return resp["Body"].read()
+
+    def get_object_stream(self, key: str) -> Iterator[bytes]:
+        safe_key = safe_object_key(key)
+        resp = self._client.get_object(Bucket=self.bucket, Key=safe_key)
+        return resp["Body"].iter_chunks(chunk_size=64 * 1024)
 
     def exists(self, key: str) -> bool:
         safe_key = safe_object_key(key)

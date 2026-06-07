@@ -69,9 +69,22 @@ Four outcome states describe *what kind of answer this is*. Two attributes carry
 **Rules baked in:**
 - **No `has_exception` state exists.** A SOC 2 exception never changes the outcome. A SOC 2-covered control answers `attested` + "addressed in our SOC 2 Type II, control CCx.x" with **no** exception commentary.
 - **Findings never downgrade an affirmation.** They live in the register and surface only when a report is provided.
-- **Anti-fabrication gate (the old "never fabricate," reframed):** a validator requires every `attested`/`qualified` answer to cite ≥1 controlling policy/control/attestation owned by the org. If it cannot, it **must** fall to `needs_input`. Default deny.
+- **Anti-fabrication gate (the old "never fabricate," reframed):** a validator requires every `attested`/`qualified` answer to cite a **resolvable basis owned by the org** — a policy, control, attestation, **or a prior approved answer** (see §5.1). If none resolves, it **must** fall to `needs_input`. The model's own ungrounded assertion never counts. Default deny.
 
 **Migration from the current (reviewer) states:** `supported_yes` → `attested`; `has_exception` → `attested` (exception dropped) or occasionally `qualified` (only if the caveat is a vendor *scope*, not an auditor finding); `supported_no` → `negative` or `needs_input`; `unknown` → `needs_input`.
+
+### 5.1 Approved-answer reuse (a valid basis without a document)
+
+Many real questionnaire answers are narrative attestations an analyst wrote and **approved** with no underlying document (e.g., "Describe your approach to X"). These approved answers are reusable by the system — this is core principle #7 ("approved-answer reuse is a candidate, not a bypass"), now made explicit for the document-less case.
+
+- **A resolved prior approved answer is a valid basis.** The acceptable-basis set for an `attested`/`qualified` answer is: policy, control, attestation, **or a resolved prior approved answer** owned by the org. With none of these → `needs_input`. The model's own ungrounded assertion never counts.
+- **Resolve server-side, never model-named.** An approved-answer citation must resolve to a real approved-answer record owned by the org (same discipline as document refs). A model-claimed approved answer that doesn't resolve is fabrication and is rejected — this is what stops reuse from becoming a laundering loophole.
+- **Always cite the prior approval.** The draft must show "Based on prior approved answer [ref]" so the reviewer sees exactly what they are confirming and the determination stays traceable.
+- **Outcome + review.** An approved-answer basis yields `attested`/`qualified` (**not** `needs_input` — we have a vetted candidate, not "nothing"), but with `needs_human_review = true`, reason "reused prior approval — confirm still accurate." Never auto-emitted; always human-confirmed.
+- **Lower authority tier + freshness.** Treat an approved-answer-only basis as lower authority than a document-backed one (the existing composite-confidence source-authority factor), and carry a freshness signal (last-approved/validated date); a stale reuse flags harder.
+- **Provenance chain.** Record each answer's basis (this answer ← approved answer X) so the grounding chain stays traceable and an ungrounded claim cannot bootstrap into apparent "evidence" over successive reuse.
+
+Schema: add an approved-answer reference to the basis/citation set plus a provenance/freshness record on reuse. The workspace "Save to library" action already creates approved-answer candidates; extend it to capture analyst-authored, document-less answers with their provenance.
 
 ---
 
@@ -192,7 +205,7 @@ Two distinct "end users" need auth at different times: **internal users** (North
 ## 13. Seed & Eval Implications
 
 - **Seed:** add structured `findings` rows for the existing pentest — the open High IDOR finding (`status: in_progress`, an `identified_date`, a future `target_remediation_date`, a shareable summary) plus its closed findings for realism. Without this, the document-request demo has nothing real to render.
-- **Evals:** re-author the golden set to pin respond-mode behavior — affirm-and-cite, SOC 2 exception suppression on covered controls, the remediation-status render, the open-finding-needs-a-date refusal, and perspective resolution. The current traps reward *flagging* (reviewer posture) and will fight this fix if left in place. Keep a separate review-mode golden set parked for Milestone 2.
+- **Evals:** re-author the golden set to pin respond-mode behavior — affirm-and-cite, SOC 2 exception suppression on covered controls, the remediation-status render, the open-finding-needs-a-date refusal, perspective resolution, and **approved-answer reuse** (a question answerable only from an approved-answer-library entry → `attested` + a "prior approved answer" citation + needs-review, never `needs_input`). The current traps reward *flagging* (reviewer posture) and will fight this fix if left in place. Keep a separate review-mode golden set parked for Milestone 2.
 
 ---
 
@@ -202,7 +215,7 @@ Two distinct "end users" need auth at different times: **internal users** (North
 - **Document access:** identity-based, not bearer-link; document-id resolved to a storage key server-side (no path injection); served via the org-scoped endpoint; every access written to the audit log; instantly revocable.
 - **Shareability:** customer-facing remediation render and document access pass through the existing `customer_shareable` gate; internal-only fields and non-shareable documents never leave.
 - **Untrusted content:** questionnaire rows and ingested documents remain **data, not instructions** — perspective resolution and affirm-and-cite must not let questionnaire text override system instructions.
-- **Output validation:** the anti-fabrication gate (cite a real owned control or fall to `needs_input`) and the open-finding-needs-a-date gate run before persist; unsupported answers route to human review. A human approves before anything is external.
+- **Output validation:** the anti-fabrication gate (cite a resolvable owned basis — policy, control, attestation, or a **server-side-resolved** prior approved answer, §5.1 — or fall to `needs_input`) and the open-finding-needs-a-date gate run before persist; reused approved answers are **always** flagged for human review with their provenance recorded; unsupported answers route to human review. A human approves before anything is external.
 
 ---
 

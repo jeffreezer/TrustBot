@@ -115,6 +115,11 @@ class Evidence(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     org_id: Mapped[uuid.UUID] = _org_fk()
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     evidence_type: Mapped[str | None] = mapped_column(String(64))
+    # Normalized artifact kind used to select the RIGHT document to attach on a
+    # document-request (05 §7): soc2_report | iso_certificate | pci_aoc | pentest_report |
+    # whitepaper | policy | document. Provision matches the requested kind — never a
+    # whitepaper as a stand-in for an attestation.
+    document_kind: Mapped[str | None] = mapped_column(String(32), index=True)
     original_filename: Mapped[str] = mapped_column(String(512), nullable=False)
     # Opaque key/URL returned by the storage adapter (local path or s3://...).
     storage_path: Mapped[str] = mapped_column(String(1024), nullable=False)

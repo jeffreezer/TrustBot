@@ -76,6 +76,21 @@ EVIDENCE_META = {
     "Security_Whitepaper": ("whitepaper", "public", True),
 }
 
+# evidence_type -> normalized document_kind used to attach the RIGHT artifact on a
+# document-request (05 §7). Keep in sync with migration 0009's backfill.
+DOCUMENT_KIND_BY_EVIDENCE_TYPE = {
+    "soc2_report": "soc2_report",
+    "iso_certificate": "iso_certificate",
+    "pci_aoc": "pci_aoc",
+    "pentest_summary": "pentest_report",
+    "whitepaper": "whitepaper",
+    "policy": "policy",
+}
+
+
+def _document_kind(evidence_type: str | None) -> str:
+    return DOCUMENT_KIND_BY_EVIDENCE_TYPE.get(evidence_type or "", "document")
+
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -224,6 +239,7 @@ def _seed_evidence(
             org_id=org.id,
             title=stem.replace("_", " "),
             evidence_type=etype,
+            document_kind=_document_kind(etype),
             original_filename=file_path.name,
             storage_path="",  # set after we know the evidence id
             content_type=mimetypes.guess_type(file_path.name)[0] or "text/markdown",
@@ -302,6 +318,7 @@ def _seed_policies(
             org_id=org.id,
             title=_extract_title(text, file_path.stem.replace("_", " ")),
             evidence_type="policy",
+            document_kind="policy",
             original_filename=file_path.name,
             storage_path="",  # set after we know the evidence id
             content_type=mimetypes.guess_type(file_path.name)[0] or "text/markdown",

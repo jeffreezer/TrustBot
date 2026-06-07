@@ -15,6 +15,7 @@ are never auto-emitted; a human approves in Phase 5.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import date
 
@@ -66,6 +67,13 @@ _ATTESTATION_CERTS = {
 }
 # Cited source types that are themselves provide-able documents (Evidence rows).
 _DOCUMENT_SOURCE_TYPES = frozenset({"evidence", "policy"})
+# Question-text cues → the attestation document_kind the request names (05 §7).
+_REQUESTED_KIND_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("soc2_report", re.compile(r"\bsoc\s*2\b|\bsoc\s*ii\b|\bsoc2\b|service organization control 2")),
+    ("iso_certificate", re.compile(r"\biso\s*/?\s*(?:iec\s*)?27001\b")),
+    ("pci_aoc", re.compile(r"\bpci(?:\s*dss)?\b|attestation of compliance|\baoc\b")),
+    ("pentest_report", re.compile(r"\bpen(?:etration)?[\s-]*test\b|\bpentest\b")),
+)
 _AD_HOC_QUESTIONNAIRE = "Ad-hoc questions (API)"
 _MODE = "respond"
 
@@ -149,37 +157,19 @@ def _freshness(session: Session, org_id: uuid.UUID, cited: list[CitedEvidence]) 
     return "current" if statuses else "unknown"
 
 
-def _resolve_documents_and_findings(
-    session: Session,
-    org_id: uuid.UUID,
-    draft: AnswerDraft,
-    cited: list[CitedEvidence],
-) -> tuple[list[ProvidedDocument], list[FindingStatus]]:
-    """For a document-request, resolve which org-scoped, shareable documents the answer
-    provides (from the *cited* evidence — never model-chosen) and any findings those
-    documents carry (the remediation register, 05 §9). All queries are org-scoped and
-    customer_shareable-gated; the model never names a document id."""
-    if not draft.requires_document:
-        return [], []
-    doc_ids: set[uuid.UUID] = set()
-    for c in cited:
-        if c.source_id and c.source_type in _DOCUMENT_SOURCE_TYPES:
-            try:
-                doc_ids.add(uuid.UUID(c.source_id))
-            except (ValueError, TypeError):
-                continue
-    if not doc_ids:
-        return [], []
-    docs = session.scalars(
-        select(Evidence).where(
-            Evidence.org_id == org_id,
-            Evidence.id.in_(doc_ids),
-            Evidence.customer_shareable.is_(True),
-        )
-    ).all()
+def requested_document_kinds(question: str) -> set[str]:
+    """The attestation artifact kinds a document-request explicitly names (05 §7). Used to
+    attach the RIGHT artifact (the SOC 2 / ISO / PCI report), never whatever the answer was
+    grounded in."""
+    low = (question or "").lower()
+    return {kind for kind, pat in _REQUESTED_KIND_PATTERNS if pat.search(low)}
+
+
+def _findings_for(
+    session: Session, org_id: uuid.UUID, docs: list[Evidence]
+) -> list[FindingStatus]:
     if not docs:
-        return [], []
-    provided = [ProvidedDocument(document_id=str(d.id), title=d.title) for d in docs]
+        return []
     findings = session.scalars(
         select(Finding).where(
             Finding.org_id == org_id,
@@ -187,7 +177,7 @@ def _resolve_documents_and_findings(
             Finding.customer_shareable.is_(True),
         )
     ).all()
-    statuses = [
+    return [
         FindingStatus(
             finding_id=str(f.id),
             external_ref=f.external_ref,
@@ -196,7 +186,64 @@ def _resolve_documents_and_findings(
         )
         for f in findings
     ]
-    return provided, statuses
+
+
+def _resolve_documents_and_findings(
+    session: Session,
+    org_id: uuid.UUID,
+    question: str,
+    draft: AnswerDraft,
+    cited: list[CitedEvidence],
+) -> tuple[list[ProvidedDocument], list[FindingStatus], set[str]]:
+    """For a document-request, resolve which org-scoped, shareable documents to attach and
+    any findings they carry (05 §7/§9).
+
+    When the question names attestation artifacts (SOC 2 / ISO / PCI / pentest), select by
+    ``document_kind`` so the actual attestation is attached — never a whitepaper as a
+    stand-in — and report any requested kind missing from the corpus so it routes to a
+    human (no substitution). Otherwise (a generic "share documentation") fall back to the
+    cited evidence documents. All queries are org-scoped + customer_shareable-gated; the
+    model never names a document id. Returns ``(provided, findings, missing_kinds)``."""
+    if not draft.requires_document:
+        return [], [], set()
+
+    requested = requested_document_kinds(question)
+    if requested:
+        docs = list(
+            session.scalars(
+                select(Evidence).where(
+                    Evidence.org_id == org_id,
+                    Evidence.customer_shareable.is_(True),
+                    Evidence.document_kind.in_(requested),
+                )
+            ).all()
+        )
+        docs.sort(key=lambda d: (d.document_kind or "", d.title or ""))
+        missing = requested - {d.document_kind for d in docs}
+        provided = [ProvidedDocument(document_id=str(d.id), title=d.title) for d in docs]
+        return provided, _findings_for(session, org_id, docs), missing
+
+    # Generic document-request: attach the cited evidence documents (org-scoped, shareable).
+    doc_ids: set[uuid.UUID] = set()
+    for c in cited:
+        if c.source_id and c.source_type in _DOCUMENT_SOURCE_TYPES:
+            try:
+                doc_ids.add(uuid.UUID(c.source_id))
+            except (ValueError, TypeError):
+                continue
+    if not doc_ids:
+        return [], [], set()
+    docs = list(
+        session.scalars(
+            select(Evidence).where(
+                Evidence.org_id == org_id,
+                Evidence.id.in_(doc_ids),
+                Evidence.customer_shareable.is_(True),
+            )
+        ).all()
+    )
+    provided = [ProvidedDocument(document_id=str(d.id), title=d.title) for d in docs]
+    return provided, _findings_for(session, org_id, docs), set()
 
 
 def _needs_input_answer(
@@ -315,8 +362,8 @@ def generate_answer(
         return _needs_input_answer(question, gate, generated_by)
 
     # Resolve provided documents + the remediation register for a document-request.
-    provided_docs, finding_statuses = _resolve_documents_and_findings(
-        session, org.id, draft, cited
+    provided_docs, finding_statuses, missing_kinds = _resolve_documents_and_findings(
+        session, org.id, question, draft, cited
     )
     remediation_required = bool(finding_statuses)
 
@@ -336,6 +383,13 @@ def generate_answer(
     )
     if injection_refs & {c.chunk_id for c in cited}:
         reasons.append("cited evidence contains injection-like content; flagged for review")
+    if missing_kinds:
+        # A requested artifact isn't in the corpus — never substitute; a human supplies or
+        # declines (05 §7).
+        reasons.append(
+            f"requested document(s) not in the evidence corpus: {sorted(missing_kinds)}; "
+            "a human must supply or decline"
+        )
 
     needs_review = (
         bool(reasons)

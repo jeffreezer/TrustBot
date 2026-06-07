@@ -34,7 +34,7 @@ def _patch(monkeypatch, chunks, *, certs=frozenset(), freshness="current"):
     monkeypatch.setattr(gen, "_freshness", lambda *a, **k: freshness)
     # Document/finding resolution is DB-backed; the offline tests never request a document,
     # but stub it so a stray call can't touch a (None) session.
-    monkeypatch.setattr(gen, "_resolve_documents_and_findings", lambda *a, **k: ([], []))
+    monkeypatch.setattr(gen, "_resolve_documents_and_findings", lambda *a, **k: ([], [], set()))
 
 
 def _run(question, generator=None):

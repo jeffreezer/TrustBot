@@ -96,7 +96,7 @@ trustbot/
     └── demo_company/           # fictional profile, controls, evidence files, sample questionnaire
 ```
 
-> **Actual on-disk layout (as built):** the tree above shows the *logical* project. The git repository root is the outer `TrustBot/` folder, which holds the planning docs, `CLAUDE.md`, `HANDOFF.md`, `.gitignore`, **`seed/`**, and a nested **`trustbot/`** directory containing the application code (`backend/` + `frontend/` + `docker-compose.yml`). So `seed/` is a **sibling of `trustbot/`**, not nested inside it, and is mounted **read-only** into the API container (`../seed:/seed:ro`) so the app can never mutate the synthetic source data. A clone is still self-contained: docs, `seed/`, and code come down together. The seed path is configurable via `SEED_DATA_DIR`.
+> **Actual on-disk layout (as built):** the tree above shows the *logical* project. The git repository root is the outer `TrustBot/` folder, which holds the planning docs under `docs/`, `README.md`, `SECURITY.md`, `CLAUDE.md`, `LICENSE`, `.gitignore`, **`seed/`**, and a nested **`trustbot/`** directory containing the application code (`backend/` + `frontend/` + `docker-compose.yml`). So `seed/` is a **sibling of `trustbot/`**, not nested inside it, and is mounted **read-only** into the API container (`../seed:/seed:ro`) so the app can never mutate the synthetic source data. A clone is still self-contained: docs, `seed/`, and code come down together. The seed path is configurable via `SEED_DATA_DIR`.
 
 ---
 

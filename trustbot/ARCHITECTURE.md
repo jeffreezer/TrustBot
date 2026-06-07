@@ -478,7 +478,7 @@ Manager. The same image runs locally and in the cloud — only env changes (12-f
 
 The product drifted into a reviewer/assessor voice (leading with "Has Exception", surfacing
 SOC 2 auditor exceptions as verdicts, returning `unknown` on Northwind's *own* practices).
-The fix (`05_TrustBot_Respond_Mode_Design.md`) is a **reframe**, not a rewrite: TrustBot
+The fix (`../docs/05_TrustBot_Respond_Mode_Design.md`) is a **reframe**, not a rewrite: TrustBot
 answers **as the vendor**, putting its best *honest* foot forward, while the reviewer
 behavior is parked for Milestone 2.
 

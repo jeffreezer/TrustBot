@@ -19,16 +19,35 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class Outcome(str, Enum):
+    """**Review mode (Milestone 2)** taxonomy — parked. The respond-mode pipeline does not
+    use these; kept so the vendor-review posture can fork onto them later (05 §2)."""
+
     SUPPORTED_YES = "supported_yes"
     SUPPORTED_NO = "supported_no"
     HAS_EXCEPTION = "has_exception"
     UNKNOWN = "unknown"
 
 
-# Outcomes that assert an answer (vs. the unknown fallback). has_exception is a valid,
-# accurate disclosure — not a problem state.
+# Review-mode answered outcomes (parked).
 ANSWERED_OUTCOMES = frozenset(
     {Outcome.SUPPORTED_YES, Outcome.SUPPORTED_NO, Outcome.HAS_EXCEPTION}
+)
+
+
+class RespondOutcome(str, Enum):
+    """**Respond mode (Milestone 1)** taxonomy — the active posture (05 §5). The vendor puts
+    its best honest foot forward; ``has_exception`` is intentionally absent (a SOC 2 exception
+    never changes the outcome — the report self-contains it)."""
+
+    ATTESTED = "attested"        # a control/policy/attestation backs an affirmative answer
+    QUALIFIED = "qualified"      # affirmative with a vendor-stated scope (not an auditor finding)
+    NEGATIVE = "negative"        # an honest "no"
+    NEEDS_INPUT = "needs_input"  # no controlling evidence / needs human judgment — no draft
+
+
+# Respond-mode outcomes that produce a draft; ``needs_input`` does not.
+RESPOND_DRAFTED = frozenset(
+    {RespondOutcome.ATTESTED, RespondOutcome.QUALIFIED, RespondOutcome.NEGATIVE}
 )
 
 
@@ -55,19 +74,30 @@ class CitedEvidence:
     fusion_score: float
 
 
+class ProvidedDocument(BaseModel):
+    """A document the answer provides — referenced by id only; the bytes are served by the
+    org-scoped, audited download endpoint (05 §8), never a bearer link."""
+
+    document_id: str
+    title: str | None = None
+
+
 class AnswerDraft(BaseModel):
     """Schema-enforced generator output. Unknown keys are ignored; a missing/invalid
-    ``outcome`` fails validation and routes to the unknown-fallback."""
+    ``outcome`` fails validation and routes to the needs-input fallback. ``requires_document``
+    is the question-type classification (document-request vs attestation, 05 §7); the
+    pipeline — not the model — resolves which org-scoped documents/findings are referenced."""
 
     model_config = ConfigDict(extra="ignore")
 
-    outcome: Outcome
+    outcome: RespondOutcome
     short_answer: str = ""
     answer: str = ""
     claim: str = ""
     scope: str = ""
-    exceptions: str = ""
     evidence_refs: list[str] = Field(default_factory=list)
+    requires_document: bool = False
+    model_note: str = ""  # reason carried when outcome is needs_input
 
 
 class EvidenceRef(BaseModel):
@@ -80,17 +110,22 @@ class EvidenceRef(BaseModel):
 
 
 class GeneratedAnswer(BaseModel):
-    """The emitted, persisted answer. ``confidence`` is the composite score (NOT the
-    rerank logit); ``confidence_factors`` records its components for transparency."""
+    """The emitted, persisted answer. ``confidence`` is the composite score (NOT the rerank
+    logit). Respond-mode attributes (05 §5): ``requires_document`` + ``provided_documents``
+    for document-request answers; ``remediation_required`` + ``finding_refs`` when a provided
+    document carries findings (rendered from the register)."""
 
     question: str
-    outcome: Outcome
+    outcome: RespondOutcome
     short_answer: str = ""
     answer: str = ""
     claim: str = ""
     scope: str = ""
-    exceptions: str = ""
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+    requires_document: bool = False
+    provided_documents: list[ProvidedDocument] = Field(default_factory=list)
+    remediation_required: bool = False
+    finding_refs: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     confidence_band: ConfidenceBand
     confidence_factors: dict[str, float] = Field(default_factory=dict)

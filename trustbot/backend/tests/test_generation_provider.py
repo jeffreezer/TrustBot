@@ -1,6 +1,6 @@
-"""The deterministic fake generator — grounding-only, composes (never echoes), and
-synthesizes over the full top-k rather than the #1 chunk alone."""
-from app.answers.schema import AnswerDraft, Outcome
+"""The deterministic fake generator — respond posture: grounding-only, composes (never
+echoes), suppresses SOC 2 exception commentary, and classifies document-requests."""
+from app.answers.schema import AnswerDraft, RespondOutcome
 from app.providers import DraftRequest, GroundingDoc
 from app.providers.fake_generator import FakeGenerationProvider
 
@@ -29,13 +29,13 @@ VAGUE_APPROVED = GroundingDoc(
 )
 
 
-def test_no_grounding_returns_unknown():
-    assert _draft("Are you FedRAMP authorized?", ()).outcome == Outcome.UNKNOWN
+def test_no_grounding_returns_needs_input():
+    assert _draft("Are you FedRAMP authorized?", ()).outcome == RespondOutcome.NEEDS_INPUT
 
 
 def test_grounded_answer_cites_and_composes():
     draft = _draft("What are your data classification levels?", (POLICY,))
-    assert draft.outcome == Outcome.SUPPORTED_YES
+    assert draft.outcome == RespondOutcome.ATTESTED
     assert draft.evidence_refs == ["policy-1"]
     # Composes with a fresh prefix rather than echoing the chunk verbatim.
     assert draft.short_answer.startswith("Yes.")
@@ -44,7 +44,7 @@ def test_grounded_answer_cites_and_composes():
         assert tier in draft.answer
 
 
-def test_negative_cue_yields_supported_no():
+def test_negative_cue_yields_negative():
     cmek = GroundingDoc(
         ref="wp-1",
         source_type="evidence",
@@ -53,20 +53,55 @@ def test_negative_cue_yields_supported_no():
         "today encryption uses Northwind-managed keys.",
         customer_shareable=True,
     )
-    assert _draft("Do you support CMEK/BYOK?", (cmek,)).outcome == Outcome.SUPPORTED_NO
+    assert _draft("Do you support CMEK/BYOK?", (cmek,)).outcome == RespondOutcome.NEGATIVE
 
 
-def test_exception_cue_yields_has_exception():
+def test_soc2_exception_is_suppressed_and_stays_attested():
     soc2 = GroundingDoc(
         ref="soc2-1",
         source_type="evidence",
         title="SOC 2",
-        text="The auditor noted an exception: 2 of 25 terminated users were revoked late.",
+        text="Access reviews are performed quarterly. The auditor noted an exception: 2 of 25 "
+        "terminated users were revoked late; management has since automated deprovisioning.",
         customer_shareable=True,
     )
-    draft = _draft("Were any exceptions noted in your SOC 2 report?", (soc2,))
-    assert draft.outcome == Outcome.HAS_EXCEPTION
-    assert "exception" in draft.exceptions.lower()
+    draft = _draft("Do you perform access reviews?", (soc2,))
+    # Respond posture: the exception does NOT downgrade the answer or surface as commentary.
+    assert draft.outcome == RespondOutcome.ATTESTED
+    assert not hasattr(draft, "exceptions")
+    assert "exception" not in draft.short_answer.lower()
+
+
+def test_qualified_cue_yields_qualified_with_scope():
+    tiered = GroundingDoc(
+        ref="ev-1",
+        source_type="evidence",
+        title="SSO",
+        text="SAML single sign-on is available on the Enterprise tier for all customers.",
+        customer_shareable=True,
+    )
+    draft = _draft("Do you support SAML SSO?", (tiered,))
+    assert draft.outcome == RespondOutcome.QUALIFIED
+    assert draft.scope
+
+
+def test_document_request_sets_requires_document():
+    soc2 = GroundingDoc(
+        ref="ev-1",
+        source_type="evidence",
+        title="SOC 2 Type II report",
+        text="Northwind maintains a current SOC 2 Type II report covering security and "
+        "availability.",
+        customer_shareable=True,
+    )
+    draft = _draft("Please provide a copy of your SOC 2 report.", (soc2,))
+    assert draft.requires_document is True
+    assert draft.outcome in {RespondOutcome.ATTESTED, RespondOutcome.QUALIFIED}
+
+
+def test_attestation_question_does_not_require_document():
+    draft = _draft("What are your data classification levels?", (POLICY,))
+    assert draft.requires_document is False
 
 
 def test_synthesis_prefers_authoritative_second_chunk_over_weak_first():
@@ -79,7 +114,7 @@ def test_synthesis_prefers_authoritative_second_chunk_over_weak_first():
     assert "Confidential" in draft.answer and "Restricted" in draft.answer
 
 
-def test_irrelevant_grounding_returns_unknown():
+def test_irrelevant_grounding_returns_needs_input():
     off_topic = GroundingDoc(
         ref="x",
         source_type="policy",
@@ -87,4 +122,5 @@ def test_irrelevant_grounding_returns_unknown():
         text="Employees accrue paid time off each month.",
         customer_shareable=True,
     )
-    assert _draft("Do you encrypt data at rest?", (off_topic,)).outcome == Outcome.UNKNOWN
+    out = _draft("Do you encrypt data at rest?", (off_topic,)).outcome
+    assert out == RespondOutcome.NEEDS_INPUT

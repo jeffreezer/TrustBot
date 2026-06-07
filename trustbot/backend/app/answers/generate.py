@@ -1,14 +1,16 @@
-"""Fixed retrieve-then-answer pipeline (Phase 4 generation half).
+"""Fixed retrieve-then-answer pipeline — respond mode (Milestone 1, 05 §5-§9).
 
 Flow, deliberately fixed (CLAUDE.md principle 6 — no agentic loop / decomposition yet):
 
-    retrieve (org-scoped, customer-shareable) → draft (generator) → resolve citations →
-    composite confidence → deterministic validators → GeneratedAnswer
+    retrieve (org-scoped, customer-shareable) → draft (generator, respond posture) →
+    resolve citations → resolve provided documents + remediation (the register) →
+    downgrade gates → composite confidence → review-flag validators → GeneratedAnswer
 
-Every branch fails closed. Missing/insufficient/low-confidence/conflicting evidence, a
-malformed draft, a failed validator, an injection-like chunk, or an un-corroborated
-reused answer all route to ``needs_human_review`` with a reason — never a confident
-guess (principle 1). Drafts are never auto-emitted; a human approves in Phase 5.
+Posture is honest-affirmative (the vendor answering for itself), but the safety stance is
+unchanged: every branch fails closed. An affirmative that cites no controlling owned
+control/policy/attestation, or a provided report with an open finding lacking a target
+date, is *downgraded* to ``needs_input`` — never a confident guess (principle 1). Drafts
+are never auto-emitted; a human approves in Phase 5.
 """
 from __future__ import annotations
 
@@ -25,6 +27,7 @@ from ..db.models import (
     AuditLog,
     Control,
     Evidence,
+    Finding,
     Organization,
     Question,
     Questionnaire,
@@ -37,17 +40,23 @@ from ..providers import (
 )
 from ..retrieval import RetrievalFilters, RetrievedChunk, retrieve
 from .confidence import compute_confidence
-from .prompts import SYSTEM_INSTRUCTIONS, detect_injection
+from .prompts import detect_injection, respond_system_instructions
 from .schema import (
-    ANSWERED_OUTCOMES,
+    RESPOND_DRAFTED,
     AnswerDraft,
     CitedEvidence,
     ConfidenceBand,
     EvidenceRef,
     GeneratedAnswer,
-    Outcome,
+    ProvidedDocument,
+    RespondOutcome,
 )
-from .validate import run_all
+from .validate import (
+    FindingStatus,
+    controlling_gate,
+    open_findings_gate,
+    run_review_checks,
+)
 
 # evidence_type → certification the org can therefore claim (attestation records).
 _ATTESTATION_CERTS = {
@@ -55,7 +64,10 @@ _ATTESTATION_CERTS = {
     "iso_certificate": "iso 27001",
     "pci_aoc": "pci dss",
 }
+# Cited source types that are themselves provide-able documents (Evidence rows).
+_DOCUMENT_SOURCE_TYPES = frozenset({"evidence", "policy"})
 _AD_HOC_QUESTIONNAIRE = "Ad-hoc questions (API)"
+_MODE = "respond"
 
 
 def _grounding_from_retrieved(
@@ -137,15 +149,71 @@ def _freshness(session: Session, org_id: uuid.UUID, cited: list[CitedEvidence]) 
     return "current" if statuses else "unknown"
 
 
-def _unknown_answer(
+def _resolve_documents_and_findings(
+    session: Session,
+    org_id: uuid.UUID,
+    draft: AnswerDraft,
+    cited: list[CitedEvidence],
+) -> tuple[list[ProvidedDocument], list[FindingStatus]]:
+    """For a document-request, resolve which org-scoped, shareable documents the answer
+    provides (from the *cited* evidence — never model-chosen) and any findings those
+    documents carry (the remediation register, 05 §9). All queries are org-scoped and
+    customer_shareable-gated; the model never names a document id."""
+    if not draft.requires_document:
+        return [], []
+    doc_ids: set[uuid.UUID] = set()
+    for c in cited:
+        if c.source_id and c.source_type in _DOCUMENT_SOURCE_TYPES:
+            try:
+                doc_ids.add(uuid.UUID(c.source_id))
+            except (ValueError, TypeError):
+                continue
+    if not doc_ids:
+        return [], []
+    docs = session.scalars(
+        select(Evidence).where(
+            Evidence.org_id == org_id,
+            Evidence.id.in_(doc_ids),
+            Evidence.customer_shareable.is_(True),
+        )
+    ).all()
+    if not docs:
+        return [], []
+    provided = [ProvidedDocument(document_id=str(d.id), title=d.title) for d in docs]
+    findings = session.scalars(
+        select(Finding).where(
+            Finding.org_id == org_id,
+            Finding.source_document_id.in_([d.id for d in docs]),
+            Finding.customer_shareable.is_(True),
+        )
+    ).all()
+    statuses = [
+        FindingStatus(
+            finding_id=str(f.id),
+            external_ref=f.external_ref,
+            status=f.status,
+            has_target_date=f.target_remediation_date is not None,
+        )
+        for f in findings
+    ]
+    return provided, statuses
+
+
+def _needs_input_answer(
     question: str, reason: str, generated_by: str
 ) -> GeneratedAnswer:
+    """The fail-closed fallback (replaces review-mode 'unknown'): no draft, human required."""
     return GeneratedAnswer(
         question=question,
-        outcome=Outcome.UNKNOWN,
+        outcome=RespondOutcome.NEEDS_INPUT,
         confidence=0.0,
         confidence_band=ConfidenceBand.NONE,
-        confidence_factors={"relevance": 0.0, "authority": 0.0, "agreement": 0.0, "coverage": 0.0},
+        confidence_factors={
+            "relevance": 0.0,
+            "authority": 0.0,
+            "agreement": 0.0,
+            "coverage": 0.0,
+        },
         needs_human_review=True,
         review_reason=reason,
         freshness_status="unknown",
@@ -170,18 +238,19 @@ def generate_answer(
     top_k: int | None = None,
     generator: GenerationProvider | None = None,
 ) -> GeneratedAnswer:
-    """Draft and validate one evidence-grounded answer (or an unknown fallback)."""
+    """Draft and validate one evidence-grounded respond-mode answer (or a needs-input
+    fallback)."""
     question = question.strip()
     generator = generator or get_generation_provider()
-    generated_by = f"phase4:{generator.name}"
+    generated_by = f"{_MODE}:{generator.name}"
     if not question:
-        return _unknown_answer(question, "Empty question.", generated_by)
+        return _needs_input_answer(question, "Empty question.", generated_by)
 
     # The question is untrusted inbound text. If it looks like it's trying to inject
     # instructions, flag it for a human rather than answering it (CLAUDE.md: treat such
     # content as data, never act on it).
     if detect_injection(question):
-        return _unknown_answer(
+        return _needs_input_answer(
             question,
             "Question contains injection-like content; flagged for human review.",
             generated_by,
@@ -192,7 +261,7 @@ def generate_answer(
     filters = RetrievalFilters(org_id=org.id, customer_shareable=True)
     retrieved = retrieve(session, query=question, filters=filters, top_k=top_k)
     if not retrieved:
-        return _unknown_answer(
+        return _needs_input_answer(
             question,
             "No customer-shareable evidence was retrieved for this question.",
             generated_by,
@@ -205,25 +274,29 @@ def generate_answer(
     raw = generator.draft(
         DraftRequest(
             question=question,
-            instructions=SYSTEM_INSTRUCTIONS,
+            instructions=respond_system_instructions(org.name),
             grounding=tuple(grounding),
         )
     )
     try:
         draft = AnswerDraft.model_validate_json(raw)
     except ValidationError:
-        return _unknown_answer(
-            question, "Generator returned a malformed or schema-invalid draft.", generated_by
+        return _needs_input_answer(
+            question,
+            "Generator returned a malformed or schema-invalid draft.",
+            generated_by,
         )
 
-    if draft.outcome == Outcome.UNKNOWN:
-        note = ""
-        try:
-            note = (json.loads(raw) or {}).get("model_note", "")
-        except (ValueError, TypeError):
-            note = ""
-        return _unknown_answer(
-            question, note or "Generator could not answer from the retrieved evidence.",
+    if draft.outcome == RespondOutcome.NEEDS_INPUT:
+        note = draft.model_note.strip()
+        if not note:
+            try:
+                note = (json.loads(raw) or {}).get("model_note", "")
+            except (ValueError, TypeError):
+                note = ""
+        return _needs_input_answer(
+            question,
+            note or "No controlling control/policy/attestation found; a human must answer.",
             generated_by,
         )
 
@@ -234,36 +307,39 @@ def generate_answer(
     # Resolve citations to the actual retrieved chunks (org-scoped by construction).
     by_ref = {c.chunk_id: c for c in cited_all}
     cited = [by_ref[r] for r in draft.evidence_refs if r in by_ref]
-    if not cited:
-        return _unknown_answer(
-            question,
-            "Draft cited no resolvable evidence from the retrieved grounding.",
-            generated_by,
-        )
+
+    # Downgrade gate 1 — anti-fabrication: an affirmative must cite ≥1 controlling owned
+    # control/policy/attestation, else it falls to needs_input (05 §5).
+    gate = controlling_gate(draft, cited)
+    if gate:
+        return _needs_input_answer(question, gate, generated_by)
+
+    # Resolve provided documents + the remediation register for a document-request.
+    provided_docs, finding_statuses = _resolve_documents_and_findings(
+        session, org.id, draft, cited
+    )
+    remediation_required = bool(finding_statuses)
+
+    # Downgrade gate 2 — a provided report with an open finding and no target date can't
+    # auto-draft (05 §9).
+    date_gate = open_findings_gate(remediation_required, finding_statuses)
+    if date_gate:
+        return _needs_input_answer(question, date_gate, generated_by)
 
     score, factors, band = compute_confidence(question, cited)
-    available_certs = _available_certs(session, org.id)
-    reasons = run_all(
+    reasons = run_review_checks(
         draft,
         cited,
         grounding_refs=grounding_refs,
-        available_certs=available_certs,
+        available_certs=_available_certs(session, org.id),
         customer_facing=True,
     )
-
-    # Approved-answer reuse is a candidate, not a bypass (principle 7): a draft cited
-    # only to prior approved answers is not corroborated by current evidence.
-    if cited and all(c.source_type == "approved_answer" for c in cited):
-        reasons.append(
-            "answer relies only on a reused approved answer; not corroborated by "
-            "current evidence (policy/control/attestation)"
-        )
     if injection_refs & {c.chunk_id for c in cited}:
         reasons.append("cited evidence contains injection-like content; flagged for review")
 
     needs_review = (
         bool(reasons)
-        or draft.outcome not in ANSWERED_OUTCOMES
+        or draft.outcome not in RESPOND_DRAFTED
         or band != ConfidenceBand.HIGH
     )
     review_reason: str | None = None
@@ -288,8 +364,11 @@ def generate_answer(
         answer=draft.answer.strip(),
         claim=draft.claim.strip(),
         scope=draft.scope.strip(),
-        exceptions=draft.exceptions.strip(),
         evidence_refs=evidence_refs,
+        requires_document=draft.requires_document or bool(provided_docs),
+        provided_documents=provided_docs,
+        remediation_required=remediation_required,
+        finding_refs=[f.finding_id for f in finding_statuses],
         confidence=score,
         confidence_band=band,
         confidence_factors=factors,
@@ -345,7 +424,11 @@ def persist_answer(
         claim=ga.claim or None,
         scope=ga.scope or None,
         evidence_refs=[ref.model_dump() for ref in ga.evidence_refs],
-        exceptions=ga.exceptions or None,
+        requires_document=ga.requires_document,
+        provided_documents=[d.model_dump() for d in ga.provided_documents],
+        remediation_required=ga.remediation_required,
+        finding_refs=list(ga.finding_refs),
+        mode=_MODE,
         confidence=ga.confidence_band.value,
         outcome=ga.outcome.value,
         needs_human_review=ga.needs_human_review,
@@ -364,11 +447,14 @@ def persist_answer(
             target_id=answer.id,
             # Counts/labels only — never answer text or evidence content.
             payload={
+                "mode": _MODE,
                 "outcome": ga.outcome.value,
                 "confidence_band": ga.confidence_band.value,
                 "confidence": ga.confidence,
                 "needs_human_review": ga.needs_human_review,
                 "evidence_count": len(ga.evidence_refs),
+                "requires_document": ga.requires_document,
+                "remediation_required": ga.remediation_required,
             },
         )
     )

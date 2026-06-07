@@ -51,13 +51,13 @@ def pg_session():
 def stub_generate_answer(monkeypatch):
     """Replace the LLM/retrieval pipeline with a plain draft — no model, network, or
     embeddings — so worker/service tests run fast and offline of any provider."""
-    from app.answers.schema import ConfidenceBand, GeneratedAnswer, Outcome
+    from app.answers.schema import ConfidenceBand, GeneratedAnswer, RespondOutcome
     from app.questionnaires import service
 
     def _fake(_session, *, org, question, top_k=None, generator=None):
         return GeneratedAnswer(
             question=question,
-            outcome=Outcome.SUPPORTED_YES,
+            outcome=RespondOutcome.ATTESTED,
             short_answer="draft",
             answer="draft answer",
             claim="claim",
@@ -65,7 +65,7 @@ def stub_generate_answer(monkeypatch):
             confidence_band=ConfidenceBand.HIGH,
             needs_human_review=False,
             freshness_status="current",
-            generated_by="phase4:test",
+            generated_by="respond:test",
         )
 
     monkeypatch.setattr(service, "generate_answer", _fake)

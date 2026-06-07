@@ -21,18 +21,18 @@ from app.questionnaires.service import (
 SAMPLE_ROWS = [
     {
         "id": "Q01", "domain": "Encryption", "question": "Encrypted at rest?",
-        "outcome": "supported_yes", "review_status": "approved",
+        "outcome": "attested", "review_status": "approved",
         "needs_human_review": "false", "confidence": "high",
         "short_answer": "Yes. AES-256.", "answer": "Yes. AES-256 at rest.",
-        "exceptions": "", "evidence": "Security Whitepaper", "freshness": "current",
-        "reviewer": "alice",
+        "documents": "", "remediation": "", "evidence": "Security Whitepaper",
+        "freshness": "current", "reviewer": "alice",
     },
     {
         "id": "Q09", "domain": "Compliance", "question": "FedRAMP authorized?",
-        "outcome": "unknown", "review_status": "pending",
+        "outcome": "needs_input", "review_status": "pending",
         "needs_human_review": "true", "confidence": "none",
-        "short_answer": "", "answer": "", "exceptions": "", "evidence": "",
-        "freshness": "unknown", "reviewer": "",
+        "short_answer": "", "answer": "", "documents": "", "remediation": "",
+        "evidence": "", "freshness": "unknown", "reviewer": "",
     },
 ]
 

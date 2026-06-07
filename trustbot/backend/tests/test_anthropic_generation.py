@@ -27,12 +27,12 @@ REQ = DraftRequest(
 )
 
 DRAFT_INPUT = {
-    "outcome": "supported_yes",
+    "outcome": "attested",
     "short_answer": "Yes. AES-256 at rest.",
     "answer": "Yes. Customer data is encrypted at rest using AES-256.",
     "claim": "Customer data is encrypted at rest using AES-256.",
     "scope": "",
-    "exceptions": "",
+    "requires_document": False,
     "evidence_refs": ["c1", "c2"],
 }
 TOOL_USE_RESPONSE = {
@@ -75,8 +75,8 @@ def test_draft_parses_tool_use_input(monkeypatch):
     provider = AnthropicGenerationProvider("test-key", "claude-sonnet-4-6")
     result = json.loads(provider.draft(REQ))
     assert result == DRAFT_INPUT
-    assert result["outcome"] == "supported_yes"
-    assert result["exceptions"] == ""  # coherent: empty, not "no exceptions noted"
+    assert result["outcome"] == "attested"
+    assert result["requires_document"] is False
 
 
 def test_request_forces_tool_and_separates_instructions_from_evidence(monkeypatch):

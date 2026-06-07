@@ -240,10 +240,22 @@ class Answer(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     claim: Mapped[str | None] = mapped_column(Text)
     scope: Mapped[str | None] = mapped_column(Text)
     evidence_refs: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # exceptions: review-mode field (Milestone 2). Parked — respond mode never writes it.
     exceptions: Mapped[str | None] = mapped_column(Text)
     confidence: Mapped[str | None] = mapped_column(String(32))
-    # supported_yes | supported_no | has_exception | unknown
+    # respond mode (M1): attested | qualified | negative | needs_input.
+    # review mode (M2, parked): supported_yes | supported_no | has_exception | unknown.
     outcome: Mapped[str | None] = mapped_column(String(32))
+    # Which posture produced this answer (forks generation; default respond for M1).
+    mode: Mapped[str] = mapped_column(String(16), nullable=False, default="respond")
+    # Respond-mode answer attributes (05 §5). requires_document + provided_documents drive
+    # the org-scoped download endpoint; remediation_required + finding_refs render the
+    # remediation block from the findings register. provided_documents holds
+    # [{"document_id", "title"}]; finding_refs holds finding ids.
+    requires_document: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    provided_documents: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    remediation_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    finding_refs: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     # Defaults to True: nothing is externally usable until a human signs off.
     needs_human_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     review_reason: Mapped[str | None] = mapped_column(Text)

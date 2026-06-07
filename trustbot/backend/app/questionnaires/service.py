@@ -27,6 +27,7 @@ from ..db.models import (
     AnswerReview,
     ApprovedAnswer,
     AuditLog,
+    Finding,
     GenerationJob,
     KnowledgeChunk,
     Organization,
@@ -53,8 +54,8 @@ PROTECTED_STATUSES = frozenset({"approved", "edited"})
 
 EXPORT_COLUMNS = [
     "id", "domain", "question", "outcome", "review_status", "needs_human_review",
-    "confidence", "short_answer", "answer", "exceptions", "evidence", "freshness",
-    "reviewer",
+    "confidence", "short_answer", "answer", "documents", "remediation", "evidence",
+    "freshness", "reviewer",
 ]
 
 
@@ -256,15 +257,73 @@ def _active_job(
     }
 
 
-def _answer_payload(answer: Answer) -> dict:
+def _render_findings(
+    session: Session, org: Organization, finding_ids: list
+) -> list[dict]:
+    """Customer-facing render of the linked findings (05 §9): org-scoped, customer_shareable
+    only, and the internal-only ``owner`` field is never included. Sorted by severity."""
+    ids = [u for u in (_safe_uuid(f) for f in (finding_ids or [])) if u]
+    if not ids:
+        return []
+    findings = list(
+        session.scalars(
+            select(Finding).where(
+                Finding.org_id == org.id,
+                Finding.id.in_(ids),
+                Finding.customer_shareable.is_(True),
+            )
+        ).all()
+    )
+    findings.sort(key=lambda f: (-(f.severity_rank or 0), f.external_ref or ""))
+    return [
+        {
+            "id": str(f.id),
+            "external_ref": f.external_ref,
+            "title": f.title,
+            "severity": f.severity,
+            "status": f.status,
+            "identified_date": f.identified_date.isoformat() if f.identified_date else None,
+            "target_remediation_date": (
+                f.target_remediation_date.isoformat() if f.target_remediation_date else None
+            ),
+            "remediated_date": f.remediated_date.isoformat() if f.remediated_date else None,
+            "remediation_summary": f.remediation_summary,
+        }
+        for f in findings
+    ]
+
+
+def _answer_payload(session: Session, org: Organization, answer: Answer) -> dict:
+    provided = []
+    for d in answer.provided_documents or []:
+        doc_id = d.get("document_id") if isinstance(d, dict) else None
+        if not doc_id:
+            continue
+        provided.append(
+            {
+                "document_id": doc_id,
+                "title": d.get("title"),
+                # The only way to fetch the bytes: org-scoped, audited, never a bearer link.
+                "download_url": f"/documents/{doc_id}/download",
+            }
+        )
+    findings = (
+        _render_findings(session, org, answer.finding_refs)
+        if answer.remediation_required
+        else []
+    )
     return {
         "id": str(answer.id),
+        "mode": answer.mode,
         "outcome": answer.outcome,
         "short_answer": answer.short_answer,
         "answer": answer.answer_text,
         "claim": answer.claim,
         "scope": answer.scope,
-        "exceptions": answer.exceptions,
+        "requires_document": answer.requires_document,
+        "provided_documents": provided,
+        "remediation_required": answer.remediation_required,
+        "findings": findings,
         "confidence": answer.confidence,
         "needs_human_review": answer.needs_human_review,
         "review_reason": answer.review_reason,
@@ -331,7 +390,7 @@ def get_question_detail(
             "domain": question.domain,
             "text": question.text,
         },
-        "answer": _answer_payload(answer) if answer else None,
+        "answer": _answer_payload(session, org, answer) if answer else None,
         "citations": citations,
     }
 
@@ -536,11 +595,23 @@ def _export_rows(
     for q in detail["questions"]:
         answer = latest.get(uuid.UUID(q["id"]))
         evidence = ""
+        documents = ""
+        remediation = ""
         if answer and answer.evidence_refs:
             evidence = "; ".join(
                 str(ref.get("title") or ref.get("source_type") or "")
                 for ref in answer.evidence_refs
             )
+        if answer:
+            documents = "; ".join(
+                str(d.get("title") or d.get("document_id") or "")
+                for d in (answer.provided_documents or [])
+                if isinstance(d, dict)
+            )
+            if answer.remediation_required:
+                remediation = _remediation_text(
+                    _render_findings(session, org, answer.finding_refs)
+                )
         rows.append(
             {
                 "id": q["external_id"] or "",
@@ -554,13 +625,32 @@ def _export_rows(
                 "confidence": (answer.confidence if answer else "") or "",
                 "short_answer": (answer.short_answer if answer else "") or "",
                 "answer": (answer.answer_text if answer else "") or "",
-                "exceptions": (answer.exceptions if answer else "") or "",
+                "documents": documents,
+                "remediation": remediation,
                 "evidence": evidence,
                 "freshness": (answer.freshness_status if answer else "") or "",
                 "reviewer": reviewer_by_answer.get(answer.id, "") if answer else "",
             }
         )
     return rows
+
+
+def _remediation_text(findings: list[dict]) -> str:
+    """Compact, customer-facing remediation status line for an export cell (no owner)."""
+    parts = []
+    for f in findings:
+        ref = f.get("external_ref") or "finding"
+        bits = [str(ref)]
+        if f.get("severity"):
+            bits.append(str(f["severity"]))
+        if f.get("status"):
+            bits.append(str(f["status"]).replace("_", " "))
+        if f.get("status") in ("open", "in_progress") and f.get("target_remediation_date"):
+            bits.append(f"target {f['target_remediation_date']}")
+        elif f.get("remediated_date"):
+            bits.append(f"remediated {f['remediated_date']}")
+        parts.append(" — ".join(bits))
+    return "; ".join(parts)
 
 
 def rows_to_csv(rows: list[dict]) -> bytes:

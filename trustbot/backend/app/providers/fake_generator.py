@@ -1,13 +1,15 @@
 """Deterministic, grounding-only generator for tests, offline CI, and the demo.
 
-Not an LLM: it composes a structured draft *only* from the retrieved grounding using
-documented keyword cues, so it can never fabricate — if the grounding doesn't cover the
-question it returns ``unknown``. The same inputs always yield the same draft, which is
-what keeps CI offline and the test suite hermetic. Production should set
-``GENERATION_PROVIDER=api`` to point at a real model; this stand-in exercises the whole
-validate → confidence → persist path without one.
+Not an LLM: it composes a structured respond-mode draft *only* from the retrieved grounding
+using documented keyword cues, so it can never fabricate — if the grounding doesn't cover
+the question it returns ``needs_input``. The same inputs always yield the same draft, which
+is what keeps CI offline and the suite hermetic. Production should set
+``GENERATION_PROVIDER=api``/``anthropic`` to point at a real model; this stand-in exercises
+the whole validate → confidence → persist path without one.
 
-It is intentionally conservative and rule-based; the answers layer (confidence,
+Respond posture (05 §5-§7): the vendor answers for itself and puts its best honest foot
+forward. A SOC 2 exception / open finding never downgrades an affirmation — it stays
+``attested`` and the report self-contains the exception. The answers layer (confidence,
 validators, fail-closed review) does the real safety work regardless of generator.
 """
 from __future__ import annotations
@@ -27,18 +29,7 @@ _AUTHORITY_ORDER = {
     "approved_answer": 3,
     "company_profile": 2,
 }
-# Outcome cues, scanned over grounding text only. Exceptions take priority over a plain
-# negative; a negative takes priority over the default "yes".
-_EXCEPTION_CUES = (
-    "exception",
-    "deviation",
-    "in remediation",
-    "remains open",
-    "not remediated",
-    "open finding",
-    "noted an exception",
-    "revoked late",
-)
+# Honest-negative cues (scanned over the best-matching sentence of the primary chunk).
 _NEGATIVE_CUES = (
     "not yet",
     "roadmap",
@@ -50,6 +41,51 @@ _NEGATIVE_CUES = (
     "no public",
     "private disclosure only",
     "not offered",
+    "not authorized",
+)
+# Vendor-scope cues → qualified (an affirmative the vendor would itself caveat — a scope,
+# never an auditor finding).
+_QUALIFIED_CUES = (
+    "enterprise tier",
+    "enterprise plan",
+    "premium tier",
+    "business tier",
+    "add-on",
+    "available on",
+    "only on the",
+    "upon request",
+    "in the eu",
+    "by region",
+)
+# Document-request classification (05 §7): a request to PROVIDE/SHARE an artifact.
+_PROVISION_VERBS = (
+    "provide",
+    "share",
+    "send",
+    "furnish",
+    "attach",
+    "upload",
+    "supply",
+    "copy of",
+    "give us",
+    "make available",
+    "may we obtain",
+    "can we see",
+)
+_DOC_NOUNS = (
+    "report",
+    "certificate",
+    "certification",
+    "attestation",
+    "soc 2",
+    "soc2",
+    "pentest",
+    "penetration test",
+    "audit",
+    "letter",
+    "aoc",
+    "documentation",
+    "iso 27001",
 )
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _STOPWORDS = frozenset(
@@ -78,13 +114,19 @@ def _first_sentence(text: str) -> str:
     return parts[0].strip() if parts else cleaned
 
 
+def _is_document_request(question: str) -> bool:
+    low = question.lower()
+    return any(v in low for v in _PROVISION_VERBS) and any(n in low for n in _DOC_NOUNS)
+
+
 class FakeGenerationProvider(GenerationProvider):
     name = "fake"
 
     def draft(self, request: DraftRequest) -> str:
         grounding = request.grounding
+        requires_document = _is_document_request(request.question)
         if not grounding:
-            return self._unknown("No supporting evidence was retrieved for the question.")
+            return self._needs_input("No supporting evidence was retrieved for the question.")
 
         q_terms = _terms(request.question)
         # Primary = most query-term overlap; ties broken by source authority, so when
@@ -101,26 +143,27 @@ class FakeGenerationProvider(GenerationProvider):
         )
         primary = grounding[order[0]]
         if q_terms and not (q_terms & _terms(primary.text)):
-            return self._unknown("Retrieved evidence does not address the question.")
+            return self._needs_input("Retrieved evidence does not address the question.")
 
         # Read the outcome from the PRIMARY chunk only, and from the *sentence that best
-        # matches the question* — so a tangential caveat elsewhere in the chunk (e.g. a
-        # CMEK "roadmap" note under an at-rest-encryption answer) can't flip it. An
-        # approved answer's own "A: Yes/No" takes precedence; exceptions are always
-        # surfaced (a disclosure we never want to bury).
-        primary_low = primary.text.lower()
+        # matches the question* — so a tangential caveat elsewhere in the chunk can't flip
+        # it. An approved answer's own "A: Yes/No" takes precedence. A SOC 2 exception /
+        # open finding does NOT downgrade — respond posture keeps the affirmation.
         polarity = self._approved_polarity(primary)
         answer_sentence = self._best_sentence(primary.text, q_terms)
-        if any(cue in primary_low for cue in _EXCEPTION_CUES):
-            outcome, prefix = "has_exception", "Yes, with a noted exception."
-        elif polarity == "no" or (
+        if polarity == "no" or (
             polarity is None and any(c in answer_sentence for c in _NEGATIVE_CUES)
         ):
-            outcome, prefix = "supported_no", "No."
+            outcome, prefix = "negative", "No."
+            scope = ""
+        elif any(c in answer_sentence for c in _QUALIFIED_CUES):
+            outcome, prefix = "qualified", "Yes, within scope."
+            scope = self._sentence_with_cue(grounding, _QUALIFIED_CUES)
         else:
-            outcome, prefix = "supported_yes", "Yes."
-        scored = [grounding[i] for i in order]
+            outcome, prefix = "attested", "Yes."
+            scope = ""
 
+        scored = [grounding[i] for i in order]
         # Synthesize over the top-k: cite the primary plus any corroborating doc that
         # shares query terms — preferring authoritative sources — not just the #1 chunk.
         refs = [primary.ref]
@@ -130,10 +173,6 @@ class FakeGenerationProvider(GenerationProvider):
             if q_terms & _terms(g.text):
                 refs.append(g.ref)
 
-        exceptions = ""
-        if outcome == "has_exception":
-            exceptions = self._sentence_with_cue(grounding, _EXCEPTION_CUES)
-
         claim = _first_sentence(primary.text)
         body = _clean(primary.text)
         draft = {
@@ -141,9 +180,9 @@ class FakeGenerationProvider(GenerationProvider):
             "short_answer": f"{prefix} {claim}".strip(),
             "answer": f"{prefix} {body}".strip(),
             "claim": claim,
-            "scope": "",
-            "exceptions": exceptions,
+            "scope": scope,
             "evidence_refs": refs,
+            "requires_document": requires_document,
         }
         return json.dumps(draft)
 
@@ -164,16 +203,16 @@ class FakeGenerationProvider(GenerationProvider):
         return m.group(1) if m else None
 
     @staticmethod
-    def _unknown(reason: str) -> str:
+    def _needs_input(reason: str) -> str:
         return json.dumps(
             {
-                "outcome": "unknown",
+                "outcome": "needs_input",
                 "short_answer": "",
                 "answer": "",
                 "claim": "",
                 "scope": "",
-                "exceptions": "",
                 "evidence_refs": [],
+                "requires_document": False,
                 "model_note": reason,
             }
         )

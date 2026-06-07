@@ -335,6 +335,8 @@ def _answer_payload(session: Session, org: Organization, answer: Answer) -> dict
         "freshness_status": answer.freshness_status,
         "evidence_refs": answer.evidence_refs or [],
         "generated_by": answer.generated_by,
+        # Per-part breakdown for a decomposed compound answer (06).
+        "sub_answers": answer.sub_answers or [],
     }
 
 

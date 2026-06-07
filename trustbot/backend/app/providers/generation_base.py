@@ -131,3 +131,11 @@ class GenerationProvider(ABC):
         as data — tool results never alter the instructions.
         """
         raise NotImplementedError(f"{self.name} does not support the tool-calling loop")
+
+    def decompose(
+        self, *, question: str, instructions: str, max_parts: int
+    ) -> list[str]:
+        """Split a compound question into ≤ ``max_parts`` atomic sub-questions (06 §5). The
+        default does NOT decompose (returns the question unchanged) — providers that can split
+        override this. ``question`` is data; ``instructions`` is trusted."""
+        return [question]

@@ -81,6 +81,16 @@ export type Finding = {
   remediation_summary: string | null;
 };
 
+export type SubAnswer = {
+  sub_question: string;
+  outcome: string;
+  short_answer: string;
+  answer: string;
+  evidence_refs: EvidenceRef[];
+  needs_human_review: boolean;
+  review_reason: string | null;
+};
+
 export type AnswerPayload = {
   id: string;
   mode: string | null;
@@ -89,6 +99,7 @@ export type AnswerPayload = {
   answer: string | null;
   claim: string | null;
   scope: string | null;
+  sub_answers: SubAnswer[];
   requires_document: boolean | null;
   provided_documents: ProvidedDocument[];
   document_selection_required: boolean | null;

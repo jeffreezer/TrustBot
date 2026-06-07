@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import app.answers.agent_tools as tools
 import app.answers.generate as gen
 from app.answers import RespondOutcome, generate_answer
-from app.answers.generate import _gather_via_loop, _route_to_loop
+from app.answers.generate import _gather_via_loop, _is_compound
 from app.providers.fake_generator import FakeGenerationProvider
 from app.retrieval import RetrievedChunk
 
@@ -31,21 +31,21 @@ def _chunk(text, *, source_type="policy", title="HR Security Policy", source_id=
     )
 
 
-# --- routing ----------------------------------------------------------------
+# --- routing (compound detection) -------------------------------------------
 
-def test_route_simple_question_uses_fixed_path():
-    assert _route_to_loop("Do you encrypt data at rest?") is False
-    assert _route_to_loop("Do you hold ISO 27001 certification?") is False
+def test_simple_question_is_not_compound():
+    assert _is_compound("Do you encrypt data at rest?") is False
+    assert _is_compound("Do you hold ISO 27001 certification?") is False
 
 
-def test_route_compound_question_uses_loop():
-    # Multiple sub-questions / conditional follow-up / enumeration all route to the loop.
-    assert _route_to_loop("Do you encrypt at rest? Do you rotate keys?") is True
-    assert _route_to_loop(
+def test_compound_question_is_detected():
+    # Multiple sub-questions / conditional follow-up / enumeration → decomposition.
+    assert _is_compound("Do you encrypt at rest? Do you rotate keys?") is True
+    assert _is_compound(
         "Are background checks performed on all employees and contractors? "
         "If yes, please attach your relevant organization's policy."
     ) is True
-    assert _route_to_loop("List your controls for: 1. access 2. logging 3. backups") is True
+    assert _is_compound("List your controls for: 1. access 2. logging 3. backups") is True
 
 
 # --- the gather loop --------------------------------------------------------
@@ -104,7 +104,7 @@ def _patch_pipeline(monkeypatch, chunks):
     monkeypatch.setattr(gen, "_freshness", lambda *a, **k: "current")
 
 
-def test_generate_answer_uses_loop_for_compound_and_records_trail(monkeypatch):
+def test_generate_answer_decomposes_compound_and_records_trail(monkeypatch):
     hr = _chunk(
         "Background checks: Northwind performs pre-employment screening on all personnel "
         "and contractors where permitted by law.",
@@ -114,12 +114,17 @@ def test_generate_answer_uses_loop_for_compound_and_records_trail(monkeypatch):
     ga = generate_answer(
         None,
         org=ORG,
-        question="Are background checks performed on employees and contractors? If yes, summarize.",
+        question="Are background checks performed on personnel? Do you screen contractors?",
         generator=FakeGenerationProvider(),
     )
     assert ga.outcome == RespondOutcome.ATTESTED
-    assert ga.retrieval_path == "loop"
-    assert ga.tool_calls and ga.tool_calls[0]["tool"] == "search_evidence"
+    # Compound → decomposed path: the audit trail starts with the split, each part loops.
+    assert ga.retrieval_path == "decomposed"
+    assert ga.tool_calls and ga.tool_calls[0]["tool"] == "decompose"
+    assert any(tc["tool"] == "search_evidence" for tc in ga.tool_calls)
+    # Two atomic parts, each with its own per-part answer + citations.
+    assert len(ga.sub_answers) == 2
+    assert all(s.evidence_refs for s in ga.sub_answers)
 
 
 def test_generate_answer_simple_question_uses_fixed_path(monkeypatch):

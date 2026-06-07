@@ -125,6 +125,10 @@ class Settings(BaseSettings):
     agent_loop_enabled: bool = True
     agent_max_iterations: int = 4
     agent_max_tool_calls: int = 5
+    # Compound questions are split into atomic sub-questions (each answered independently
+    # through the full pipeline, then recomposed). Bounded so one question can't fan out into
+    # an unbounded number of model calls.
+    agent_max_subquestions: int = 8
 
     # Character-based chunking (token-free so tests need no tokenizer/model).
     # Overlap preserves context across chunk boundaries.
@@ -233,6 +237,8 @@ class Settings(BaseSettings):
             raise ValueError("AGENT_MAX_ITERATIONS must be positive.")
         if self.agent_max_tool_calls <= 0:
             raise ValueError("AGENT_MAX_TOOL_CALLS must be positive.")
+        if self.agent_max_subquestions <= 0:
+            raise ValueError("AGENT_MAX_SUBQUESTIONS must be positive.")
 
         return self
 

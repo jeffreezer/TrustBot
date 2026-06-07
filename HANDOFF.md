@@ -17,6 +17,7 @@ The owner runs his instance on **GCP**, wants **AWS portability**, and the proje
 | `03_TrustBot_Full_Vision_Roadmap.md` | Everything beyond M1/M2. Future. |
 | `04_TrustBot_MVP_Build_Guide.md` | **The step-by-step build guide. Follow its phases.** Stack rationale, repo structure, done-criteria per phase. |
 | `05_TrustBot_Respond_Mode_Design.md` | **FINALIZED course correction — authoritative for Milestone 1 answer generation.** Respond-mode posture (affirm-and-cite, SOC 2 exception suppression, perspective resolution), outcome taxonomy, remediation register, document access (layer 1 + audit), auth sequencing. **Supersedes `04` where they conflict on drafting/classification.** |
+| `06_TrustBot_Adaptive_Retrieval_Loop.md` | **FINALIZED Phase 6 design — authoritative for the agentic upgrade.** Single bounded agent, read-only org-scoped tools, deterministic validators unchanged, audited; shared engine for respond (M1, first) + review (M2). |
 | `seed/northwind_ai/` | Synthetic demo data: fictional "Northwind AI" company profile, control catalog, evidence docs (SOC 2, pen test, AOC, ISO/SoA, whitepaper), completed CAIQ + an original security questionnaire. |
 | `seed/northwind_ai/README.md` | **Answer key** for the seed data, incl. 9 deliberately planted traps with correct answers — the basis for the eval golden set. |
 | `seed/northwind_ai/eval_golden_set.yaml` | Starter eval set wired to the traps. |

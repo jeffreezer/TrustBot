@@ -202,6 +202,8 @@ trustbot/
 
 ### Phase 6 — Agentic upgrade (the headline skill)
 
+> **See `06_TrustBot_Adaptive_Retrieval_Loop.md` for the finalized design** — single bounded agent, read-only org-scoped tools, deterministic validators unchanged, shared by respond + review modes (respond first). `06` is authoritative for this phase.
+
 **Goal:** handle messy, multi-part questions well.
 
 - **Question decomposition:** split compound questions into atomic sub-questions (e.g., encryption-at-rest / in-transit / key-management / regional-exceptions).

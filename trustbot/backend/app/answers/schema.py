@@ -148,3 +148,7 @@ class GeneratedAnswer(BaseModel):
     review_reason: str | None = None
     freshness_status: str = "unknown"
     generated_by: str = ""
+    # Adaptive retrieval loop (06): which path gathered the evidence ("fixed" | "loop") and
+    # the ordered, metadata-only tool-call trail (audited; empty on the fixed path).
+    retrieval_path: str = "fixed"
+    tool_calls: list[dict] = Field(default_factory=list)

@@ -35,13 +35,17 @@ from ..db.models import (
     Question,
     Questionnaire,
 )
+from ..config import settings
 from ..providers import (
+    AgentRound,
     DraftRequest,
     GenerationProvider,
     GroundingDoc,
+    ToolResultMsg,
     get_generation_provider,
 )
 from ..retrieval import RetrievalFilters, RetrievedChunk, retrieve
+from .agent_tools import TOOL_SPECS, audit_view, execute_tool
 from .confidence import compute_confidence
 from .prompts import detect_injection, respond_system_instructions
 from .schema import (
@@ -343,8 +347,36 @@ def _resolve_documents_and_findings(
             missing_kinds=missing,
         )
 
-    # Generic document-request: never guess which document to disclose. Defer to a human and
-    # surface candidates to choose from.
+    # No named attestation kind. Attach the governing document(s) the answer actually CITES
+    # as its basis — the system resolves chunk→document (the model named no document id), so
+    # a topical request like "...background checks? attach your relevant policy" attaches the
+    # HR Security Policy it cited, not an unrelated doc. If the answer has no specific document
+    # basis (cites only controls, a prior answer, or nothing), the request is genuinely
+    # ambiguous → defer to the analyst picker (05 §8).
+    doc_ids: set[uuid.UUID] = set()
+    for c in cited:
+        if c.source_id and c.source_type in _DOCUMENT_SOURCE_TYPES:
+            try:
+                doc_ids.add(uuid.UUID(c.source_id))
+            except (ValueError, TypeError):
+                continue
+    if doc_ids:
+        docs = list(
+            session.scalars(
+                select(Evidence).where(
+                    Evidence.org_id == org_id,
+                    Evidence.id.in_(doc_ids),
+                    Evidence.customer_shareable.is_(True),
+                )
+            ).all()
+        )
+        if docs:
+            docs.sort(key=lambda d: (d.document_kind or "", d.title or ""))
+            provided = [ProvidedDocument(document_id=str(d.id), title=d.title) for d in docs]
+            return _DocResolution(
+                provided=provided, findings=_findings_for(session, org_id, docs)
+            )
+
     return _DocResolution(
         selection_required=True,
         candidates=_candidate_documents(session, org_id, question),
@@ -382,6 +414,182 @@ def _normalize_ref(ref: str) -> str:
     return r.strip().strip("[](){}").strip()
 
 
+# --- adaptive retrieval loop (Phase 6) -------------------------------------
+
+# Cheap, deterministic routing cues: a compound / conditional / enumerated question goes to
+# the loop; a simple single-fact question keeps the one-shot path (no cost regression).
+_LOOP_CUES = re.compile(r"\bif\s+(?:yes|so|applicable|not|any)\b", re.IGNORECASE)
+_ENUM_LINE = re.compile(r"(?:^|\n)\s*(?:\d+[.)]|[-*•]|[a-d][.)])\s", re.MULTILINE)
+# Inline enumerators like "1. ... 2. ... 3." (a space after the marker, not a decimal).
+_ENUM_INLINE = re.compile(r"(?<!\d)[1-9][.)]\s+\S")
+
+
+def _route_to_loop(question: str) -> bool:
+    """True for compound/ambiguous questions worth the adaptive loop; False for simple
+    single-fact ones (06 §5 routing). Pure + cheap — no model call."""
+    q = question.strip()
+    low = q.lower()
+    if low.count("?") >= 2:  # multiple explicit sub-questions
+        return True
+    if _LOOP_CUES.search(low):  # conditional follow-up, e.g. "if yes, attach ..."
+        return True
+    if _ENUM_LINE.search(q):  # bulleted / line-start enumerated multi-part
+        return True
+    if len(_ENUM_INLINE.findall(q)) >= 2:  # "1. ... 2. ..." inline multi-part
+        return True
+    if ";" in q:
+        return True
+    if low.count(" and ") >= 2 and len(q) > 120:  # several and-joined asks
+        return True
+    return False
+
+
+@dataclass
+class _Gather:
+    """The output of the gather step (one-shot or loop): a structured draft (or a needs-input
+    reason) plus the citeable pool + the audit trail. Downstream is identical for both."""
+
+    draft: AnswerDraft | None = None
+    reason: str | None = None
+    cited_all: list[CitedEvidence] = field(default_factory=list)
+    grounding_refs: list[str] = field(default_factory=list)
+    injection_refs: set[str] = field(default_factory=set)
+    tool_audit: list[dict] = field(default_factory=list)
+    path: str = "fixed"
+
+
+def _parse_draft(raw: str) -> tuple[AnswerDraft | None, str | None]:
+    """Validate a generator draft; return ``(draft, None)`` or ``(None, reason)`` for a
+    malformed draft or a model-signalled needs_input."""
+    try:
+        draft = AnswerDraft.model_validate_json(raw)
+    except ValidationError:
+        return None, "Generator returned a malformed or schema-invalid draft."
+    if draft.outcome == RespondOutcome.NEEDS_INPUT:
+        note = draft.model_note.strip()
+        if not note:
+            try:
+                note = (json.loads(raw) or {}).get("model_note", "")
+            except (ValueError, TypeError):
+                note = ""
+        return None, note or "No controlling control/policy/attestation found; a human must answer."
+    return draft, None
+
+
+def _gather_fixed(
+    session: Session, org: Organization, question: str, generator: GenerationProvider, *, top_k
+) -> _Gather:
+    """Phase 4 one-shot: a single hybrid search → draft. Used for simple questions."""
+    filters = RetrievalFilters(org_id=org.id, customer_shareable=True)
+    retrieved = retrieve(session, query=question, filters=filters, top_k=top_k)
+    if not retrieved:
+        return _Gather(reason="No customer-shareable evidence was retrieved for this question.")
+    cited_all, grounding = _grounding_from_retrieved(retrieved)
+    raw = generator.draft(
+        DraftRequest(
+            question=question,
+            instructions=respond_system_instructions(org.name),
+            grounding=tuple(grounding),
+        )
+    )
+    draft, reason = _parse_draft(raw)
+    return _Gather(
+        draft=draft,
+        reason=reason,
+        cited_all=cited_all,
+        grounding_refs=[d.ref for d in grounding],
+        injection_refs={c.chunk_id for c in cited_all if detect_injection(c.text)},
+        path="fixed",
+    )
+
+
+def _gather_via_loop(
+    session: Session, org: Organization, question: str, generator: GenerationProvider, *, top_k
+) -> _Gather:
+    """The bounded adaptive loop (06 §5): the model searches/refines via read-only org-scoped
+    tools, then emits the structured draft. Every gathered chunk joins the citeable pool; every
+    tool call is recorded for the audit trail. Bounded by an iteration cap + tool-call budget;
+    on exhaustion without a draft → needs_input (downstream)."""
+    system = respond_system_instructions(org.name)
+    k = top_k or settings.retrieval_top_k
+    max_iters = settings.agent_max_iterations
+    max_calls = settings.agent_max_tool_calls
+
+    history: list[AgentRound] = []
+    pool: dict[str, CitedEvidence] = {}
+    audit: list[dict] = []
+    calls_used = 0
+    draft: AnswerDraft | None = None
+    reason: str | None = None
+
+    for i in range(max_iters):
+        force_final = (i == max_iters - 1) or (calls_used >= max_calls)
+        turn = generator.agent_turn(
+            system=system,
+            question=question,
+            history=tuple(history),
+            tools=TOOL_SPECS,
+            force_final=force_final,
+        )
+        if turn.draft_json is not None:
+            draft, reason = _parse_draft(turn.draft_json)
+            break
+        if not turn.tool_calls:
+            break  # the model neither searched nor drafted — stop (→ needs_input)
+        results: list[ToolResultMsg] = []
+        for call in turn.tool_calls:
+            if calls_used >= max_calls:
+                break
+            audit.append(audit_view(call))  # metadata only — never tool content
+            result, new_cited = execute_tool(
+                session, org, call, customer_facing=True, top_k=k
+            )
+            calls_used += 1
+            for c in new_cited:
+                pool.setdefault(c.chunk_id, c)
+            results.append(
+                ToolResultMsg(call_id=call.id, name=call.name, content=json.dumps(result))
+            )
+        history.append(AgentRound(assistant=turn, results=tuple(results)))
+
+    cited_all = list(pool.values())
+    if draft is None and reason is None:
+        reason = (
+            "The adaptive search did not find sufficient evidence to answer; a human must "
+            "review."
+        )
+    return _Gather(
+        draft=draft,
+        reason=reason,
+        cited_all=cited_all,
+        grounding_refs=[c.chunk_id for c in cited_all],
+        injection_refs={c.chunk_id for c in cited_all if detect_injection(c.text)},
+        tool_audit=audit,
+        path="loop",
+    )
+
+
+def _gather(
+    session: Session,
+    org: Organization,
+    question: str,
+    generator: GenerationProvider,
+    *,
+    top_k: int | None,
+) -> _Gather:
+    """Route to the adaptive loop for compound questions (when enabled + the provider supports
+    tools); otherwise the one-shot path. Both coexist; simple questions stay one search."""
+    supports_tools = getattr(generator, "supports_tools", None)
+    if (
+        settings.agent_loop_enabled
+        and callable(supports_tools)
+        and supports_tools()
+        and _route_to_loop(question)
+    ):
+        return _gather_via_loop(session, org, question, generator, top_k=top_k)
+    return _gather_fixed(session, org, question, generator, top_k=top_k)
+
+
 def generate_answer(
     session: Session,
     *,
@@ -408,55 +616,30 @@ def generate_answer(
             generated_by,
         )
 
-    # Customer-facing answer: retrieve only customer-shareable evidence (the Phase 3
-    # gate), so internal-only material can never enter the grounding in the first place.
-    filters = RetrievalFilters(org_id=org.id, customer_shareable=True)
-    retrieved = retrieve(session, query=question, filters=filters, top_k=top_k)
-    if not retrieved:
-        return _needs_input_answer(
-            question,
-            "No customer-shareable evidence was retrieved for this question.",
-            generated_by,
-        )
+    # Gather evidence — one-shot for a simple question, or the adaptive loop for a
+    # compound/ambiguous one — and get a structured draft. Customer-facing: every gather path
+    # is hard-gated to customer_shareable, so internal-only material never enters the answer.
+    gathered = _gather(session, org, question, generator, top_k=top_k)
+    cited_all = gathered.cited_all
+    grounding_refs = gathered.grounding_refs
+    injection_refs = gathered.injection_refs
 
-    cited_all, grounding = _grounding_from_retrieved(retrieved)
-    grounding_refs = [d.ref for d in grounding]
-    injection_refs = {c.chunk_id for c in cited_all if detect_injection(c.text)}
+    def _fail(reason: str) -> GeneratedAnswer:
+        """needs_input fallback that still carries the retrieval path + tool-call trail."""
+        ans = _needs_input_answer(question, reason, generated_by)
+        ans.retrieval_path = gathered.path
+        ans.tool_calls = gathered.tool_audit
+        return ans
 
-    raw = generator.draft(
-        DraftRequest(
-            question=question,
-            instructions=respond_system_instructions(org.name),
-            grounding=tuple(grounding),
-        )
-    )
-    try:
-        draft = AnswerDraft.model_validate_json(raw)
-    except ValidationError:
-        return _needs_input_answer(
-            question,
-            "Generator returned a malformed or schema-invalid draft.",
-            generated_by,
-        )
-
-    if draft.outcome == RespondOutcome.NEEDS_INPUT:
-        note = draft.model_note.strip()
-        if not note:
-            try:
-                note = (json.loads(raw) or {}).get("model_note", "")
-            except (ValueError, TypeError):
-                note = ""
-        return _needs_input_answer(
-            question,
-            note or "No controlling control/policy/attestation found; a human must answer.",
-            generated_by,
-        )
+    if gathered.draft is None:
+        return _fail(gathered.reason or "No sufficient evidence; a human must review.")
+    draft = gathered.draft
 
     # Normalize cited refs before resolving/validating: models often echo the prompt's
     # "[ref:<id>]" label, returning "ref:<id>" or "[<id>]" instead of the bare chunk id.
     draft.evidence_refs = [r for r in (_normalize_ref(x) for x in draft.evidence_refs) if r]
 
-    # Resolve citations to the actual retrieved chunks (org-scoped by construction).
+    # Resolve citations to the actual gathered chunks (org-scoped by construction).
     by_ref = {c.chunk_id: c for c in cited_all}
     cited = [by_ref[r] for r in draft.evidence_refs if r in by_ref]
 
@@ -464,7 +647,7 @@ def generate_answer(
     # (policy/control/attestation OR a prior approved answer), else → needs_input (05).
     gate = acceptable_basis_gate(draft, cited)
     if gate:
-        return _needs_input_answer(question, gate, generated_by)
+        return _fail(gate)
 
     # Resolve a reused approved-answer basis server-side (provenance + freshness + a final
     # anti-fabrication check). A document-tier basis stands on its own; an approval-only
@@ -475,10 +658,8 @@ def generate_answer(
     if is_affirmative and not has_controlling and not reused:
         # The only "basis" was an approved-answer reference that does not resolve to a real
         # approved record — treat as fabrication, not a basis.
-        return _needs_input_answer(
-            question,
-            "affirmative basis (prior approved answer) did not resolve to an approved record",
-            generated_by,
+        return _fail(
+            "affirmative basis (prior approved answer) did not resolve to an approved record"
         )
     reused_only = is_affirmative and bool(reused) and not has_controlling
 
@@ -494,7 +675,7 @@ def generate_answer(
     # auto-draft (05 §9).
     date_gate = open_findings_gate(remediation_required, finding_statuses)
     if date_gate:
-        return _needs_input_answer(question, date_gate, generated_by)
+        return _fail(date_gate)
 
     score, factors, band = compute_confidence(question, cited)
     freshness_status = _freshness(session, org.id, cited)
@@ -572,6 +753,8 @@ def generate_answer(
         review_reason=review_reason,
         freshness_status=freshness_status,
         generated_by=generated_by,
+        retrieval_path=gathered.path,
+        tool_calls=gathered.tool_audit,
     )
 
 
@@ -654,7 +837,22 @@ def persist_answer(
                 "requires_document": ga.requires_document,
                 "document_selection_required": ga.document_selection_required,
                 "remediation_required": ga.remediation_required,
+                "retrieval_path": ga.retrieval_path,
+                "tool_call_count": len(ga.tool_calls),
             },
         )
     )
+    # Adaptive loop: record HOW the agent gathered evidence — the ordered, metadata-only
+    # tool-call trail (tool + query/id; never content) — so the evidence path is auditable.
+    if ga.tool_calls:
+        session.add(
+            AuditLog(
+                org_id=org.id,
+                actor=ga.generated_by or "system:generate",
+                action="answer.retrieval",
+                target_type="answer",
+                target_id=answer.id,
+                payload={"path": ga.retrieval_path, "tool_calls": ga.tool_calls},
+            )
+        )
     return answer

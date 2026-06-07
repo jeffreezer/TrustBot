@@ -17,7 +17,15 @@ from __future__ import annotations
 import json
 import re
 
-from .generation_base import DraftRequest, GenerationProvider, GroundingDoc
+from .generation_base import (
+    AgentRound,
+    AssistantTurn,
+    DraftRequest,
+    GenerationProvider,
+    GroundingDoc,
+    ToolCall,
+    ToolSpec,
+)
 
 # Relative authority for choosing which grounding doc to answer from. The canonical
 # authority weights used for *confidence* live in answers/confidence.py; this is only a
@@ -128,12 +136,14 @@ class FakeGenerationProvider(GenerationProvider):
     name = "fake"
 
     def draft(self, request: DraftRequest) -> str:
-        grounding = request.grounding
-        requires_document = _is_document_request(request.question)
+        return json.dumps(self._compose(request.question, request.grounding))
+
+    def _compose(self, question: str, grounding: tuple[GroundingDoc, ...]) -> dict:
+        requires_document = _is_document_request(question)
         if not grounding:
             return self._needs_input("No supporting evidence was retrieved for the question.")
 
-        q_terms = _terms(request.question)
+        q_terms = _terms(question)
         # Primary = most query-term overlap; ties broken by source authority, so when
         # redundant sources cover the same fact the authoritative one wins (a policy
         # beats a vague approved answer — the Phase 3 data-classification lesson).
@@ -196,7 +206,7 @@ class FakeGenerationProvider(GenerationProvider):
         basis_note = ""
         if primary.source_type == "approved_answer":
             basis_note = f"Based on prior approved answer [ref:{primary.ref}]. "
-        draft = {
+        return {
             "outcome": outcome,
             "short_answer": f"{basis_note}{prefix} {claim}".strip(),
             "answer": f"{basis_note}{prefix} {body}".strip(),
@@ -205,7 +215,61 @@ class FakeGenerationProvider(GenerationProvider):
             "evidence_refs": refs,
             "requires_document": requires_document,
         }
-        return json.dumps(draft)
+
+    # --- adaptive retrieval loop (deterministic double, 06 §6) -------------
+
+    def supports_tools(self) -> bool:
+        return True
+
+    def agent_turn(
+        self,
+        *,
+        system: str,
+        question: str,
+        history: tuple[AgentRound, ...],
+        tools: tuple[ToolSpec, ...],
+        force_final: bool,
+    ) -> AssistantTurn:
+        """A scripted, offline double of an agentic model: search once, then draft from what
+        came back. Exercises the loop's control flow + tool plumbing deterministically; query
+        reformulation is the real model's job, not the fake's."""
+        gathered = self._grounding_from_history(history)
+        if not force_final and not history:
+            return AssistantTurn(
+                tool_calls=(
+                    ToolCall(id="call-1", name="search_evidence", arguments={"query": question}),
+                )
+            )
+        return AssistantTurn(draft_json=json.dumps(self._compose(question, gathered)))
+
+    @staticmethod
+    def _grounding_from_history(history: tuple[AgentRound, ...]) -> tuple[GroundingDoc, ...]:
+        """Reconstruct the citeable grounding from the loop's tool results (data the loop fed
+        back). Handles both search_evidence (`results`) and get_policy/get_control (`chunks`)."""
+        docs: list[GroundingDoc] = []
+        seen: set[str] = set()
+        for rnd in history:
+            for res in rnd.results:
+                try:
+                    payload = json.loads(res.content)
+                except (ValueError, TypeError):
+                    continue
+                items = payload.get("results") or payload.get("chunks") or []
+                for it in items:
+                    ref = it.get("ref") if isinstance(it, dict) else None
+                    if not ref or ref in seen:
+                        continue
+                    seen.add(ref)
+                    docs.append(
+                        GroundingDoc(
+                            ref=ref,
+                            source_type=it.get("source_type") or "evidence",
+                            title=it.get("title") or "",
+                            text=it.get("text") or "",
+                            customer_shareable=True,
+                        )
+                    )
+        return tuple(docs)
 
     @staticmethod
     def _best_sentence(text: str, q_terms: set[str]) -> str:
@@ -224,19 +288,17 @@ class FakeGenerationProvider(GenerationProvider):
         return m.group(1) if m else None
 
     @staticmethod
-    def _needs_input(reason: str) -> str:
-        return json.dumps(
-            {
-                "outcome": "needs_input",
-                "short_answer": "",
-                "answer": "",
-                "claim": "",
-                "scope": "",
-                "evidence_refs": [],
-                "requires_document": False,
-                "model_note": reason,
-            }
-        )
+    def _needs_input(reason: str) -> dict:
+        return {
+            "outcome": "needs_input",
+            "short_answer": "",
+            "answer": "",
+            "claim": "",
+            "scope": "",
+            "evidence_refs": [],
+            "requires_document": False,
+            "model_note": reason,
+        }
 
     @staticmethod
     def _sentence_with_cue(grounding: tuple[GroundingDoc, ...], cues: tuple[str, ...]) -> str:

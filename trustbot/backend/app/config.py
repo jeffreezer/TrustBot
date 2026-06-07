@@ -118,6 +118,14 @@ class Settings(BaseSettings):
     # boundary so one job can't fire an unbounded number of blocking model calls.
     max_generation_batch: int = 200
 
+    # Adaptive retrieval loop (Phase 6). When enabled AND the provider supports tool-calling,
+    # compound/ambiguous questions gather evidence iteratively via read-only, org-scoped
+    # tools; simple single-fact questions keep the one-shot Phase 4 path (no cost regression).
+    # Bounded by an iteration cap + a tool-call budget so the loop can never run away.
+    agent_loop_enabled: bool = True
+    agent_max_iterations: int = 4
+    agent_max_tool_calls: int = 5
+
     # Character-based chunking (token-free so tests need no tokenizer/model).
     # Overlap preserves context across chunk boundaries.
     chunk_size: int = 1200
@@ -221,6 +229,10 @@ class Settings(BaseSettings):
             raise ValueError("GENERATION_TIMEOUT must be positive.")
         if self.max_generation_batch <= 0:
             raise ValueError("MAX_GENERATION_BATCH must be positive.")
+        if self.agent_max_iterations <= 0:
+            raise ValueError("AGENT_MAX_ITERATIONS must be positive.")
+        if self.agent_max_tool_calls <= 0:
+            raise ValueError("AGENT_MAX_TOOL_CALLS must be positive.")
 
         return self
 

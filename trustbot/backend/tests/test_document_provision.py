@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 import app.answers.generate as gen
 from app.answers.generate import _resolve_documents_and_findings, requested_document_kinds
-from app.answers.schema import AnswerDraft, RespondOutcome
+from app.answers.schema import AnswerDraft, CitedEvidence, RespondOutcome
 from app.db.models import Evidence, Organization
 
 
@@ -141,6 +141,55 @@ def test_candidates_exclude_non_shareable_and_cross_org(pg_session, monkeypatch)
     assert "Internal Runbook" not in titles  # non-shareable never a candidate
     assert "Other SOC 2" not in titles  # cross-org never a candidate
     assert "SOC 2 Type II" in titles
+
+
+def _cite_doc(ev: Evidence) -> CitedEvidence:
+    return CitedEvidence(
+        chunk_id=str(uuid.uuid4()),
+        source_type="policy",
+        source_id=str(ev.id),
+        title=ev.title,
+        text="Background checks are performed prior to start.",
+        customer_shareable=True,
+        confidentiality="confidential",
+        rerank_score=1.0,
+        fusion_score=0.03,
+    )
+
+
+def test_generic_request_attaches_the_cited_governing_document(pg_session):
+    # Background-checks shape: not a named attestation kind, but the answer cites a SPECIFIC
+    # policy as its basis → attach THAT policy (not the picker, not an unrelated doc).
+    org = _org(pg_session, "Cited Doc")
+    hr = _evidence(org, title="HR Security Policy", kind="policy")
+    other = _evidence(org, title="Acceptable Use Policy", kind="policy")
+    pg_session.add_all([hr, other])
+    pg_session.flush()
+
+    res = _resolve_documents_and_findings(
+        pg_session,
+        org.id,
+        "Are background checks performed? If yes, attach your relevant policy.",
+        _doc_request(),
+        cited=[_cite_doc(hr)],
+    )
+    assert [p.title for p in res.provided] == ["HR Security Policy"]
+    assert res.selection_required is False  # specific basis → attach, don't defer
+
+
+def test_generic_request_without_document_basis_defers(pg_session, monkeypatch):
+    # No cited document (e.g. answer rests only on a control) → genuinely ambiguous → picker.
+    org = _corpus(pg_session)
+    monkeypatch.setattr(gen, "retrieve", lambda *a, **k: [])
+    res = _resolve_documents_and_findings(
+        pg_session,
+        org.id,
+        "Please share documentation about your program.",
+        _doc_request(),
+        cited=[],
+    )
+    assert res.provided == []
+    assert res.selection_required is True
 
 
 def test_candidates_are_relevance_ranked(pg_session, monkeypatch):

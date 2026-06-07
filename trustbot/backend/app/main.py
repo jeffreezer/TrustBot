@@ -22,6 +22,7 @@ from .db.models import (
     Control,
     Evidence,
     EvidenceControlLink,
+    Finding,
     KnowledgeChunk,
     Organization,
     Question,
@@ -124,6 +125,7 @@ def debug_summary(session: Session = Depends(get_session)) -> dict:
             "knowledge_chunks": count(KnowledgeChunk),
             "questionnaires": count(Questionnaire),
             "questions": count(Question),
+            "findings": count(Finding),
         },
     }
 

@@ -319,3 +319,39 @@ class GenerationJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class Finding(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Remediation-register entry — a finding from a pentest / SOC 2 exception / internal
+    audit / vuln scan (respond-mode, Milestone 1; reused by Milestone 2 review).
+
+    Severity is stored **verbatim** as the source report rates it ("High", "P1", "CVSS 8.1")
+    — we impose no scale; ``severity_rank`` is an optional derived integer for UI sorting
+    only. ``org_id`` is enforced on every query (default deny). The customer-facing render
+    shows shareable fields only — ``owner`` and internal notes never leave.
+    """
+
+    __tablename__ = "findings"
+
+    org_id: Mapped[uuid.UUID] = _org_fk()
+    # The source document (e.g. the pentest evidence). SET NULL on doc deletion so the
+    # finding's history survives; org deletion still cascades via org_id.
+    source_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("evidence.id", ondelete="SET NULL"), index=True
+    )
+    # pentest | soc2_exception | internal_audit | vuln_scan
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    external_ref: Mapped[str | None] = mapped_column(String(64))  # e.g. "H-01" / "IDOR-01"
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    severity: Mapped[str | None] = mapped_column(String(64))  # verbatim from the source
+    severity_rank: Mapped[int | None] = mapped_column(Integer)  # derived; UI sort only
+    # open | in_progress | remediated | risk_accepted | closed
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    identified_date: Mapped[date | None] = mapped_column(Date)
+    target_remediation_date: Mapped[date | None] = mapped_column(Date)  # planned closure
+    remediated_date: Mapped[date | None] = mapped_column(Date)  # actual closure
+    remediation_summary: Mapped[str | None] = mapped_column(Text)  # customer-shareable
+    owner: Mapped[str | None] = mapped_column(String(128))  # internal-only
+    customer_shareable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    confidentiality: Mapped[str] = mapped_column(String(32), nullable=False, default="internal")

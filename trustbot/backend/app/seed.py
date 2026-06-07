@@ -41,6 +41,7 @@ from .db.models import (
     Control,
     Evidence,
     EvidenceControlLink,
+    Finding,
     Organization,
     Question,
 )
@@ -592,6 +593,125 @@ def _seed_inbound_questionnaire(
     )
 
 
+# Remediation-register rows mirroring Pentest_Executive_Summary.md: the open High IDOR
+# (H-01, in_progress, with a target date + shareable summary) plus the remediated medium
+# findings and a risk-accepted low item — so the document-provision answer has a real
+# remediation block to render. Dates from the report (testing Mar 9-27, report Apr 10 2026).
+_PENTEST_FINDINGS = [
+    {
+        "external_ref": "H-01",
+        "title": "Insufficient authorization check on a tenant document endpoint (IDOR)",
+        "description": (
+            "A document-retrieval API endpoint did not fully validate tenant ownership of a "
+            "requested object identifier (insecure direct object reference). Exploitation "
+            "required a valid authenticated session and a target object id."
+        ),
+        "severity": "High",
+        "severity_rank": 4,
+        "status": "in_progress",
+        "identified_date": date(2026, 3, 27),
+        "target_remediation_date": date(2026, 5, 15),
+        "remediated_date": None,
+        "remediation_summary": (
+            "Temporary authorization middleware deployed on the affected route during testing; "
+            "full tenant-scoped authorization across all object endpoints in progress, retest "
+            "scheduled. Target completion 2026-05-15."
+        ),
+    },
+    {
+        "external_ref": "M-01",
+        "title": "Verbose error messages disclosing stack details",
+        "description": "Resolved by standardizing error handling.",
+        "severity": "Medium",
+        "severity_rank": 3,
+        "status": "remediated",
+        "identified_date": date(2026, 3, 27),
+        "target_remediation_date": None,
+        "remediated_date": date(2026, 4, 5),
+        "remediation_summary": "Error handling standardized; stack details no longer disclosed.",
+    },
+    {
+        "external_ref": "M-02",
+        "title": "Missing security headers on a subset of responses",
+        "description": "Resolved by enforcing headers at the edge.",
+        "severity": "Medium",
+        "severity_rank": 3,
+        "status": "remediated",
+        "identified_date": date(2026, 3, 27),
+        "target_remediation_date": None,
+        "remediated_date": date(2026, 4, 5),
+        "remediation_summary": "Security headers enforced at the edge for all responses.",
+    },
+    {
+        "external_ref": "M-03",
+        "title": "Outdated dependency with a known vulnerability (non-production service)",
+        "description": "Dependency upgraded.",
+        "severity": "Medium",
+        "severity_rank": 3,
+        "status": "remediated",
+        "identified_date": date(2026, 3, 27),
+        "target_remediation_date": None,
+        "remediated_date": date(2026, 4, 6),
+        "remediation_summary": "Affected dependency upgraded to a patched version.",
+    },
+    {
+        "external_ref": "L-01",
+        "title": "Low-severity cookie attribute hardening and informational items",
+        "description": (
+            "Cookie attribute hardening, rate-limit tuning, and informational disclosures."
+        ),
+        "severity": "Low",
+        "severity_rank": 2,
+        "status": "risk_accepted",
+        "identified_date": date(2026, 3, 27),
+        "target_remediation_date": None,
+        "remediated_date": None,
+        "remediation_summary": (
+            "Reviewed and risk-accepted with documented justification by the Head of GRC."
+        ),
+    },
+]
+
+
+def _seed_findings(
+    session: Session, org: Organization, evidence: list[tuple[Evidence, bytes]]
+) -> int:
+    """Seed the remediation register for the synthetic pentest (§9/§13).
+
+    Findings link to the pentest evidence row. All are customer-shareable so the
+    document-provision answer can render them; each carries an internal-only ``owner`` the
+    customer-facing render filters out via the shareability gate.
+    """
+    pentest = next(
+        (ev for ev, _ in evidence if ev.evidence_type == "pentest_summary"), None
+    )
+    if pentest is None:
+        return 0
+    for f in _PENTEST_FINDINGS:
+        session.add(
+            Finding(
+                org_id=org.id,
+                source_document_id=pentest.id,
+                source_type="pentest",
+                external_ref=f["external_ref"],
+                title=f["title"],
+                description=f["description"],
+                severity=f["severity"],
+                severity_rank=f["severity_rank"],
+                status=f["status"],
+                identified_date=f["identified_date"],
+                target_remediation_date=f["target_remediation_date"],
+                remediated_date=f["remediated_date"],
+                remediation_summary=f["remediation_summary"],
+                owner="Head of Security",  # internal-only
+                customer_shareable=True,
+                confidentiality="confidential",
+            )
+        )
+    session.flush()
+    return len(_PENTEST_FINDINGS)
+
+
 def seed(session: Session, *, force: bool = False) -> dict:
     existing = session.scalar(select(Organization).where(Organization.slug == ORG_SLUG))
     if existing is not None:
@@ -616,6 +736,7 @@ def seed(session: Session, *, force: bool = False) -> dict:
         session, org, profile, evidence, controls, approved, policies
     )
     question_count = _seed_inbound_questionnaire(session, org, seed_dir)
+    finding_count = _seed_findings(session, org, evidence)
 
     counts = {
         "controls": len(controls),
@@ -625,6 +746,7 @@ def seed(session: Session, *, force: bool = False) -> dict:
         "approved_answers": len(approved),
         "knowledge_chunks": chunk_count,
         "inbound_questions": question_count,
+        "findings": finding_count,
     }
     session.add(
         AuditLog(

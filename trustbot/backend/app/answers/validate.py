@@ -14,9 +14,17 @@ from dataclasses import dataclass
 
 from .schema import RESPOND_DRAFTED, AnswerDraft, CitedEvidence, RespondOutcome
 
-# Source types that substantiate an attested/qualified claim. A reused prior answer
-# (approved_answer) or marketing facts (company_profile) do NOT, on their own, control.
+# Document-tier basis: a current owned policy / control / attestation document. This is the
+# *higher-authority* tier — an answer with one of these stands on its own.
 CONTROLLING_SOURCE_TYPES = frozenset({"policy", "control", "evidence"})
+
+# Acceptable basis for an affirmative (05, reuse rule): a document-tier source OR a resolved
+# prior approved answer. Real questionnaires include analyst-written narrative attestations
+# approved with no underlying document — those must be reusable. A reused approval is a
+# lower-authority tier (re-validated, always human-reviewed), but it IS a valid basis. The
+# model's own ungrounded assertion never counts; marketing copy (company_profile) never
+# counts on its own.
+ACCEPTABLE_BASIS_SOURCE_TYPES = CONTROLLING_SOURCE_TYPES | frozenset({"approved_answer"})
 
 _AFFIRMATIVE = frozenset({RespondOutcome.ATTESTED, RespondOutcome.QUALIFIED})
 
@@ -50,16 +58,20 @@ def asserted_certifications(text: str) -> set[str]:
 
 # --- downgrade gates (failure => needs_input) -------------------------------
 
-def controlling_gate(draft: AnswerDraft, cited: Sequence[CitedEvidence]) -> str | None:
-    """Anti-fabrication, reframed (05 §5): an attested/qualified answer must cite ≥1
-    controlling policy/control/attestation owned by the org. Default deny → needs_input."""
+def acceptable_basis_gate(draft: AnswerDraft, cited: Sequence[CitedEvidence]) -> str | None:
+    """Anti-fabrication (05, reuse rule): an attested/qualified answer must cite ≥1 acceptable
+    basis — a policy/control/attestation OR a prior approved answer. The model's own
+    ungrounded assertion (or marketing-only) never counts. Default deny → needs_input.
+
+    (The pipeline additionally resolves an approved-answer basis server-side, so a
+    model-claimed approval that doesn't resolve to a real record is rejected too.)"""
     if draft.outcome not in _AFFIRMATIVE:
         return None
-    if any(c.source_type in CONTROLLING_SOURCE_TYPES for c in cited):
+    if any(c.source_type in ACCEPTABLE_BASIS_SOURCE_TYPES for c in cited):
         return None
     return (
-        "affirmative answer cites no controlling policy / control / attestation owned by "
-        "the organization"
+        "affirmative answer cites no acceptable basis (policy / control / attestation, or a "
+        "prior approved answer)"
     )
 
 
@@ -152,9 +164,10 @@ def run_review_checks(
 
 __all__ = [
     "CONTROLLING_SOURCE_TYPES",
+    "ACCEPTABLE_BASIS_SOURCE_TYPES",
     "FindingStatus",
     "asserted_certifications",
-    "controlling_gate",
+    "acceptable_basis_gate",
     "open_findings_gate",
     "validate_required_fields",
     "validate_citations",

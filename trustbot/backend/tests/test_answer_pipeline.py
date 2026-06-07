@@ -28,13 +28,25 @@ def _chunk(text, *, source_type="policy", shareable=True, title="Doc", rerank=2.
     )
 
 
+def _stub_reused(_session, _org_id, cited):
+    """Mirror the server-side approved-answer resolution without a DB: every cited
+    approved_answer chunk resolves to a (recent) approved record."""
+    return [
+        SimpleNamespace(
+            question_external_id=f"AA-{i}", source="library", updated_at=None, extra=None
+        )
+        for i, c in enumerate(cited)
+        if c.source_type == "approved_answer"
+    ]
+
+
 def _patch(monkeypatch, chunks, *, certs=frozenset(), freshness="current"):
     monkeypatch.setattr(gen, "retrieve", lambda *a, **k: list(chunks))
     monkeypatch.setattr(gen, "_available_certs", lambda *a, **k: set(certs))
     monkeypatch.setattr(gen, "_freshness", lambda *a, **k: freshness)
-    # Document/finding resolution is DB-backed; the offline tests never request a document,
-    # but stub it so a stray call can't touch a (None) session.
+    # These are DB-backed; stub them so the offline tests can't touch a (None) session.
     monkeypatch.setattr(gen, "_resolve_documents_and_findings", lambda *a, **k: ([], [], set()))
+    monkeypatch.setattr(gen, "_resolve_reused_approvals", _stub_reused)
 
 
 def _run(question, generator=None):
@@ -77,9 +89,10 @@ def test_high_confidence_policy_answer_passes(monkeypatch):
     assert ga.evidence_refs and ga.evidence_refs[0].source_type == "policy"
 
 
-def test_approved_answer_only_is_downgraded_to_needs_input(monkeypatch):
-    # A reused approved answer is a candidate, not a bypass: it does not *control* an
-    # affirmation, so an answer citing only it falls to needs_input (anti-fabrication gate).
+def test_approved_answer_only_is_reusable_with_review(monkeypatch):
+    # A prior approved answer IS a valid basis (analyst-written narrative attestations must
+    # be reusable). It stays attested — but never auto-emits: it flags for re-confirmation
+    # and cites the prior approval explicitly.
     aa = _chunk(
         "Q: Is data encrypted at rest? A: Yes. AES-256 at rest.",
         source_type="approved_answer",
@@ -87,9 +100,43 @@ def test_approved_answer_only_is_downgraded_to_needs_input(monkeypatch):
     )
     _patch(monkeypatch, [aa])
     ga = _run("Do you encrypt data at rest?")
+    assert ga.outcome == RespondOutcome.ATTESTED
+    assert ga.needs_human_review is True
+    assert "reused prior approval" in (ga.review_reason or "").lower()
+    # Provenance: the prior approved answer is cited as the basis.
+    assert any(r.source_type == "approved_answer" for r in ga.evidence_refs)
+    assert "based on prior approved answer" in ga.answer.lower()
+
+
+def test_company_profile_only_yields_needs_input(monkeypatch):
+    # Marketing copy is not a citeable basis — the generator must not affirm from it.
+    profile = _chunk(
+        "Northwind AI is the trusted leader in secure AI for the enterprise.",
+        source_type="company_profile",
+        title="Company Profile",
+    )
+    _patch(monkeypatch, [profile])
+    ga = _run("Do you encrypt data at rest?")
     assert ga.outcome == RespondOutcome.NEEDS_INPUT
     assert ga.needs_human_review is True
-    assert "controlling" in (ga.review_reason or "").lower()
+
+
+def test_ungrounded_affirmative_is_downgraded_by_gate(monkeypatch):
+    # Backstop: even if a model emits a confident "yes" citing only marketing copy, the
+    # acceptable-basis gate downgrades it to needs_input rather than emitting it.
+    profile = _chunk("We are the best.", source_type="company_profile", title="Profile")
+    _patch(monkeypatch, [profile])
+    ref = str(profile.chunk_id)
+    ungrounded = SimpleNamespace(
+        name="overclaimer",
+        draft=lambda req: (
+            '{"outcome": "attested", "short_answer": "Yes.", "claim": "Yes we do.", '
+            '"answer": "Yes.", "evidence_refs": ["' + ref + '"]}'
+        ),
+    )
+    ga = _run("Do you encrypt data at rest?", generator=ungrounded)
+    assert ga.outcome == RespondOutcome.NEEDS_INPUT
+    assert "acceptable basis" in (ga.review_reason or "").lower()
 
 
 def test_injection_in_cited_chunk_is_flagged(monkeypatch):

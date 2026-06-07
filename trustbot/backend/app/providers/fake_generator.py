@@ -29,6 +29,11 @@ _AUTHORITY_ORDER = {
     "approved_answer": 3,
     "company_profile": 2,
 }
+# An affirmative must rest on a basis the answer can cite (05, reuse rule): a policy,
+# control, attestation, OR a prior approved answer. Marketing copy (company_profile) is not
+# a basis on its own, so the fake never affirms from it — it yields needs_input instead of
+# a confident "yes" the validator would just have to downgrade.
+_SUPPORTING_SOURCE_TYPES = frozenset({"policy", "control", "evidence", "approved_answer"})
 # Honest-negative cues (scanned over the best-matching sentence of the primary chunk).
 _NEGATIVE_CUES = (
     "not yet",
@@ -141,9 +146,20 @@ class FakeGenerationProvider(GenerationProvider):
             ),
             reverse=True,
         )
-        primary = grounding[order[0]]
-        if q_terms and not (q_terms & _terms(primary.text)):
-            return self._needs_input("Retrieved evidence does not address the question.")
+        # The answer's basis must be a citeable supporting source that addresses the
+        # question; if none does, yield needs_input rather than affirm from marketing copy
+        # or an off-topic chunk (the validator's anti-fabrication gate is the backstop).
+        candidates = [
+            i for i in order if grounding[i].source_type in _SUPPORTING_SOURCE_TYPES
+        ]
+        if q_terms:
+            candidates = [i for i in candidates if q_terms & _terms(grounding[i].text)]
+        if not candidates:
+            return self._needs_input(
+                "No citeable supporting evidence (policy / control / attestation / prior "
+                "approved answer) addresses the question."
+            )
+        primary = grounding[candidates[0]]
 
         # Read the outcome from the PRIMARY chunk only, and from the *sentence that best
         # matches the question* — so a tangential caveat elsewhere in the chunk can't flip
@@ -175,10 +191,15 @@ class FakeGenerationProvider(GenerationProvider):
 
         claim = _first_sentence(primary.text)
         body = _clean(primary.text)
+        # When the basis is a reused approved answer, cite it explicitly so the reviewer can
+        # see the source of the determination (05, reuse rule).
+        basis_note = ""
+        if primary.source_type == "approved_answer":
+            basis_note = f"Based on prior approved answer [ref:{primary.ref}]. "
         draft = {
             "outcome": outcome,
-            "short_answer": f"{prefix} {claim}".strip(),
-            "answer": f"{prefix} {body}".strip(),
+            "short_answer": f"{basis_note}{prefix} {claim}".strip(),
+            "answer": f"{basis_note}{prefix} {body}".strip(),
             "claim": claim,
             "scope": scope,
             "evidence_refs": refs,

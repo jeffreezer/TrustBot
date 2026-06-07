@@ -2,8 +2,8 @@
 from app.answers.schema import AnswerDraft, CitedEvidence, RespondOutcome
 from app.answers.validate import (
     FindingStatus,
+    acceptable_basis_gate,
     asserted_certifications,
-    controlling_gate,
     open_findings_gate,
     run_review_checks,
     validate_certifications,
@@ -50,25 +50,36 @@ def test_valid_subset_of_grounding_passes():
     assert validate_citations(_draft(evidence_refs=["a"]), grounding_refs=["a", "b"]) == []
 
 
-# --- controlling gate (anti-fabrication; failure => needs_input) ------------
+# --- acceptable-basis gate (anti-fabrication; failure => needs_input) -------
 
-def test_attested_without_controlling_source_is_downgraded():
-    # Only a reused approved answer / marketing profile — not controlling.
-    cited = [_cite("a", source_type="approved_answer"), _cite("b", source_type="company_profile")]
-    assert controlling_gate(_draft(), cited) is not None
+def test_attested_with_company_profile_only_is_downgraded():
+    # Marketing copy alone is not a basis; the model's own assertion never counts.
+    cited = [_cite("a", source_type="company_profile")]
+    assert acceptable_basis_gate(_draft(), cited) is not None
+
+
+def test_attested_with_no_citations_is_downgraded():
+    assert acceptable_basis_gate(_draft(evidence_refs=[]), []) is not None
 
 
 def test_attested_with_policy_passes_gate():
-    assert controlling_gate(_draft(), [_cite("a", source_type="policy")]) is None
+    assert acceptable_basis_gate(_draft(), [_cite("a", source_type="policy")]) is None
+
+
+def test_attested_with_approved_answer_passes_gate():
+    # A prior approved answer IS an acceptable basis (reuse rule); the pipeline then
+    # resolves it server-side and flags it for human re-confirmation.
+    cited = [_cite("a", source_type="approved_answer")]
+    assert acceptable_basis_gate(_draft(), cited) is None
 
 
 def test_qualified_with_control_passes_gate():
     cited = [_cite("a", source_type="control")]
-    assert controlling_gate(_draft(outcome=RespondOutcome.QUALIFIED), cited) is None
+    assert acceptable_basis_gate(_draft(outcome=RespondOutcome.QUALIFIED), cited) is None
 
 
-def test_negative_outcome_skips_controlling_gate():
-    assert controlling_gate(_draft(outcome=RespondOutcome.NEGATIVE), []) is None
+def test_negative_outcome_skips_basis_gate():
+    assert acceptable_basis_gate(_draft(outcome=RespondOutcome.NEGATIVE), []) is None
 
 
 # --- open-finding gate (failure => needs_input) -----------------------------

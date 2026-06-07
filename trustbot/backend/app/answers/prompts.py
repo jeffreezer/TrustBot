@@ -49,9 +49,16 @@ def respond_system_instructions(respondent: str) -> str:
         "finding. Cite the backing evidence.\n"
         '- "negative": the honest answer is no (e.g. not FedRAMP authorized). State it '
         "truthfully and briefly.\n"
-        '- "needs_input": no controlling control/policy/attestation is present, or the '
-        "question needs human judgment / a disclosure call. Do NOT guess.\n"
+        '- "needs_input": the EVIDENCE does not contain a basis you can cite for an '
+        "affirmative, or the question needs human judgment / a disclosure call. Do NOT guess.\n"
         "RULES:\n"
+        "- Affirm ONLY from a basis you can cite in the EVIDENCE: a policy, a control, an "
+        "attestation, OR a prior approved answer. If the EVIDENCE contains no such basis, "
+        'return "needs_input" — never assert a "yes" from your own knowledge and leave it '
+        "for review. Marketing copy alone is not a basis.\n"
+        "- When your basis is a prior approved answer, say so explicitly and cite it: "
+        '"Based on prior approved answer [ref] ...". It will always be re-confirmed by a '
+        "human before sending.\n"
         "- Findings and audit exceptions do NOT downgrade an affirmation. If a control is "
         'covered by the SOC 2, answer "attested" and reference the report (e.g. "addressed in '
         'our SOC 2 Type II") — generate ZERO exception commentary; the report\'s management '

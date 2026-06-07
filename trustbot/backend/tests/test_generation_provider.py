@@ -104,6 +104,36 @@ def test_attestation_question_does_not_require_document():
     assert draft.requires_document is False
 
 
+def test_company_profile_only_yields_needs_input():
+    # Marketing copy is not a citeable basis — the generator must self-regulate to
+    # needs_input rather than affirm and rely on the downstream gate.
+    profile = GroundingDoc(
+        ref="cp-1",
+        source_type="company_profile",
+        title="Company Profile",
+        text="Northwind AI encrypts everything and is the most secure platform available.",
+        customer_shareable=True,
+    )
+    assert _draft("Do you encrypt data at rest?", (profile,)).outcome == RespondOutcome.NEEDS_INPUT
+
+
+def test_approved_answer_is_first_class_citeable_basis():
+    # A prior approved answer (analyst-written, no underlying document) is reusable: the
+    # generator affirms from it and cites it explicitly as the basis.
+    aa = GroundingDoc(
+        ref="aa-9",
+        source_type="approved_answer",
+        title="SECQ ENC-01",
+        text="Q: Is data encrypted at rest? A: Yes. Customer data is encrypted at rest "
+        "with AES-256.",
+        customer_shareable=True,
+    )
+    draft = _draft("Do you encrypt data at rest?", (aa,))
+    assert draft.outcome == RespondOutcome.ATTESTED
+    assert "aa-9" in draft.evidence_refs
+    assert "based on prior approved answer" in draft.answer.lower()
+
+
 def test_synthesis_prefers_authoritative_second_chunk_over_weak_first():
     # #1 is a vague approved answer; #2 is the authoritative policy that lists the tiers.
     draft = _draft(

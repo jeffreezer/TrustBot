@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from ..db.models import (
     Answer,
+    ApprovedAnswer,
     AuditLog,
     Control,
     Evidence,
@@ -53,8 +54,9 @@ from .schema import (
     RespondOutcome,
 )
 from .validate import (
+    CONTROLLING_SOURCE_TYPES,
     FindingStatus,
-    controlling_gate,
+    acceptable_basis_gate,
     open_findings_gate,
     run_review_checks,
 )
@@ -76,6 +78,8 @@ _REQUESTED_KIND_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 _AD_HOC_QUESTIONNAIRE = "Ad-hoc questions (API)"
 _MODE = "respond"
+# A reused approved answer older than this carries a stale freshness signal and flags harder.
+_APPROVED_ANSWER_STALE_DAYS = 365
 
 
 def _grounding_from_retrieved(
@@ -123,14 +127,60 @@ def _available_certs(session: Session, org_id: uuid.UUID) -> set[str]:
     return {_ATTESTATION_CERTS[t] for t in types if t in _ATTESTATION_CERTS}
 
 
+def _resolve_reused_approvals(
+    session: Session, org_id: uuid.UUID, cited: list[CitedEvidence]
+) -> list[ApprovedAnswer]:
+    """Resolve cited approved-answer chunks to real, org-owned ApprovedAnswer records (the
+    same server-side discipline as documents — the model names a chunk; the system resolves
+    it). A model-claimed approval that doesn't resolve simply isn't returned, so it can't act
+    as a basis (it's treated as fabrication upstream)."""
+    ids: set[uuid.UUID] = set()
+    for c in cited:
+        if c.source_type == "approved_answer" and c.source_id:
+            try:
+                ids.add(uuid.UUID(c.source_id))
+            except (ValueError, TypeError):
+                continue
+    if not ids:
+        return []
+    return list(
+        session.scalars(
+            select(ApprovedAnswer).where(
+                ApprovedAnswer.org_id == org_id, ApprovedAnswer.id.in_(ids)
+            )
+        ).all()
+    )
+
+
+def _approved_answer_validated_on(answer: ApprovedAnswer) -> date | None:
+    """Last-approved/validated date for a reused answer — an explicit ``extra`` date if the
+    source carried one, else the row's last-updated date as a proxy."""
+    extra = answer.extra or {}
+    for key in ("last_validated", "approved_at", "validated_at"):
+        raw = extra.get(key)
+        if isinstance(raw, str):
+            try:
+                return date.fromisoformat(raw.strip()[:10])
+            except ValueError:
+                continue
+    if answer.updated_at:
+        return answer.updated_at.date()
+    return None
+
+
 def _freshness(session: Session, org_id: uuid.UUID, cited: list[CitedEvidence]) -> str:
-    """Derive a freshness label from the cited sources' validity / review dates."""
+    """Derive a freshness label from the cited sources' validity / review / approval dates."""
     source_ids = {
         uuid.UUID(c.source_id)
         for c in cited
         if c.source_id and c.source_type in {"evidence", "policy", "control"}
     }
-    if not source_ids:
+    approval_ids = {
+        uuid.UUID(c.source_id)
+        for c in cited
+        if c.source_id and c.source_type == "approved_answer"
+    }
+    if not source_ids and not approval_ids:
         return "unknown"
     today = date.today()
     statuses: set[str] = set()
@@ -150,6 +200,18 @@ def _freshness(session: Session, org_id: uuid.UUID, cited: list[CitedEvidence]) 
             statuses.add("review_due")
         else:
             statuses.add("current")
+    if approval_ids:
+        approvals = session.scalars(
+            select(ApprovedAnswer).where(
+                ApprovedAnswer.org_id == org_id, ApprovedAnswer.id.in_(approval_ids)
+            )
+        ).all()
+        for aa in approvals:
+            validated = _approved_answer_validated_on(aa)
+            if validated and (today - validated).days > _APPROVED_ANSWER_STALE_DAYS:
+                statuses.add("stale")
+            else:
+                statuses.add("current")
     if "stale" in statuses:
         return "stale"
     if "review_due" in statuses:
@@ -355,11 +417,27 @@ def generate_answer(
     by_ref = {c.chunk_id: c for c in cited_all}
     cited = [by_ref[r] for r in draft.evidence_refs if r in by_ref]
 
-    # Downgrade gate 1 — anti-fabrication: an affirmative must cite ≥1 controlling owned
-    # control/policy/attestation, else it falls to needs_input (05 §5).
-    gate = controlling_gate(draft, cited)
+    # Downgrade gate 1 — anti-fabrication: an affirmative must cite an acceptable basis
+    # (policy/control/attestation OR a prior approved answer), else → needs_input (05).
+    gate = acceptable_basis_gate(draft, cited)
     if gate:
         return _needs_input_answer(question, gate, generated_by)
+
+    # Resolve a reused approved-answer basis server-side (provenance + freshness + a final
+    # anti-fabrication check). A document-tier basis stands on its own; an approval-only
+    # basis is valid but lower-authority and always human-reviewed.
+    reused = _resolve_reused_approvals(session, org.id, cited)
+    has_controlling = any(c.source_type in CONTROLLING_SOURCE_TYPES for c in cited)
+    is_affirmative = draft.outcome in (RespondOutcome.ATTESTED, RespondOutcome.QUALIFIED)
+    if is_affirmative and not has_controlling and not reused:
+        # The only "basis" was an approved-answer reference that does not resolve to a real
+        # approved record — treat as fabrication, not a basis.
+        return _needs_input_answer(
+            question,
+            "affirmative basis (prior approved answer) did not resolve to an approved record",
+            generated_by,
+        )
+    reused_only = is_affirmative and bool(reused) and not has_controlling
 
     # Resolve provided documents + the remediation register for a document-request.
     provided_docs, finding_statuses, missing_kinds = _resolve_documents_and_findings(
@@ -374,6 +452,7 @@ def generate_answer(
         return _needs_input_answer(question, date_gate, generated_by)
 
     score, factors, band = compute_confidence(question, cited)
+    freshness_status = _freshness(session, org.id, cited)
     reasons = run_review_checks(
         draft,
         cited,
@@ -390,11 +469,24 @@ def generate_answer(
             f"requested document(s) not in the evidence corpus: {sorted(missing_kinds)}; "
             "a human must supply or decline"
         )
+    if reused_only:
+        # Reuse of a human-approved answer is a candidate, not a bypass (principle 7): keep
+        # the affirmative, but always re-confirm. Provenance is the cited approved_answer ref.
+        provenance = ", ".join(
+            sorted(a.question_external_id or a.source for a in reused)
+        )
+        reasons.append(
+            "reused prior approval — confirm still accurate"
+            + (f" (basis: approved answer {provenance})" if provenance else "")
+        )
+        if freshness_status == "stale":
+            reasons.append("reused approved answer is stale — re-validate before sending")
 
     needs_review = (
         bool(reasons)
         or draft.outcome not in RESPOND_DRAFTED
         or band != ConfidenceBand.HIGH
+        or reused_only  # never auto-emit a reused approval
     )
     review_reason: str | None = None
     if reasons:
@@ -428,7 +520,7 @@ def generate_answer(
         confidence_factors=factors,
         needs_human_review=needs_review,
         review_reason=review_reason,
-        freshness_status=_freshness(session, org.id, cited),
+        freshness_status=freshness_status,
         generated_by=generated_by,
     )
 

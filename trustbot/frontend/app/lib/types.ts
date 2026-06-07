@@ -62,6 +62,12 @@ export type ProvidedDocument = {
   download_url: string;
 };
 
+export type CandidateDocument = {
+  document_id: string;
+  title: string | null;
+  document_kind: string | null;
+};
+
 export type Finding = {
   id: string;
   external_ref: string | null;
@@ -84,6 +90,8 @@ export type AnswerPayload = {
   scope: string | null;
   requires_document: boolean | null;
   provided_documents: ProvidedDocument[];
+  document_selection_required: boolean | null;
+  candidate_documents: CandidateDocument[];
   remediation_required: boolean | null;
   findings: Finding[];
   confidence: string | null;

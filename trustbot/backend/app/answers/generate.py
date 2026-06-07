@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from dataclasses import dataclass, field
 from datetime import date
 
 from pydantic import ValidationError
@@ -46,6 +47,7 @@ from .prompts import detect_injection, respond_system_instructions
 from .schema import (
     RESPOND_DRAFTED,
     AnswerDraft,
+    CandidateDocument,
     CitedEvidence,
     ConfidenceBand,
     EvidenceRef,
@@ -80,6 +82,20 @@ _AD_HOC_QUESTIONNAIRE = "Ad-hoc questions (API)"
 _MODE = "respond"
 # A reused approved answer older than this carries a stale freshness signal and flags harder.
 _APPROVED_ANSWER_STALE_DAYS = 365
+# How many ranked documents to surface as candidates for a generic document-request.
+_CANDIDATE_TOP_K = 25
+
+
+@dataclass
+class _DocResolution:
+    """Outcome of resolving a document-request (05 §7-§8)."""
+
+    provided: list[ProvidedDocument] = field(default_factory=list)
+    findings: list[FindingStatus] = field(default_factory=list)
+    missing_kinds: set[str] = field(default_factory=set)
+    # Generic request: attachment deferred to a human + the candidate picker.
+    selection_required: bool = False
+    candidates: list[CandidateDocument] = field(default_factory=list)
 
 
 def _grounding_from_retrieved(
@@ -250,24 +266,62 @@ def _findings_for(
     ]
 
 
+def _candidate_documents(
+    session: Session, org_id: uuid.UUID, question: str
+) -> list[CandidateDocument]:
+    """The org's customer_shareable evidence documents, relevance-ranked to the question for
+    the analyst's picker (05 §8). Strictly org-scoped + shareable; documents only (collapsed
+    from chunks). Ranking reuses the existing hybrid retrieval; documents it didn't surface
+    are still listed (less relevant) so any shareable doc is selectable."""
+    # Every Evidence row is a shareable document candidate (attestations, policies, etc.).
+    universe = list(
+        session.scalars(
+            select(Evidence).where(
+                Evidence.org_id == org_id,
+                Evidence.customer_shareable.is_(True),
+            )
+        ).all()
+    )
+    if not universe:
+        return []
+    # Rank by the document-backed chunks (evidence/policy source types) the question hits.
+    filters = RetrievalFilters(
+        org_id=org_id,
+        customer_shareable=True,
+        source_types=list(_DOCUMENT_SOURCE_TYPES),
+    )
+    rank: dict[str, int] = {}
+    for i, rc in enumerate(retrieve(session, query=question, filters=filters, top_k=_CANDIDATE_TOP_K)):
+        sid = str(rc.source_id) if rc.source_id else None
+        if sid and sid not in rank:
+            rank[sid] = i
+    universe.sort(key=lambda d: (rank.get(str(d.id), 10**6), d.title or ""))
+    return [
+        CandidateDocument(
+            document_id=str(d.id), title=d.title, document_kind=d.document_kind
+        )
+        for d in universe
+    ]
+
+
 def _resolve_documents_and_findings(
     session: Session,
     org_id: uuid.UUID,
     question: str,
     draft: AnswerDraft,
     cited: list[CitedEvidence],
-) -> tuple[list[ProvidedDocument], list[FindingStatus], set[str]]:
-    """For a document-request, resolve which org-scoped, shareable documents to attach and
-    any findings they carry (05 §7/§9).
+) -> _DocResolution:
+    """Resolve a document-request (05 §7-§8).
 
-    When the question names attestation artifacts (SOC 2 / ISO / PCI / pentest), select by
+    When the question NAMES attestation artifacts (SOC 2 / ISO / PCI / pentest), attach by
     ``document_kind`` so the actual attestation is attached — never a whitepaper as a
-    stand-in — and report any requested kind missing from the corpus so it routes to a
-    human (no substitution). Otherwise (a generic "share documentation") fall back to the
-    cited evidence documents. All queries are org-scoped + customer_shareable-gated; the
-    model never names a document id. Returns ``(provided, findings, missing_kinds)``."""
+    stand-in — and report any requested kind missing from the corpus (routes to a human, no
+    substitution). When the request is GENERIC (no specific artifact named), do NOT auto-
+    attach: providing a document is a disclosure decision, so defer to a human and surface
+    a relevance-ranked candidate picker instead. All queries are org-scoped +
+    customer_shareable-gated; the model never names a document id."""
     if not draft.requires_document:
-        return [], [], set()
+        return _DocResolution()
 
     requested = requested_document_kinds(question)
     if requested:
@@ -283,29 +337,18 @@ def _resolve_documents_and_findings(
         docs.sort(key=lambda d: (d.document_kind or "", d.title or ""))
         missing = requested - {d.document_kind for d in docs}
         provided = [ProvidedDocument(document_id=str(d.id), title=d.title) for d in docs]
-        return provided, _findings_for(session, org_id, docs), missing
+        return _DocResolution(
+            provided=provided,
+            findings=_findings_for(session, org_id, docs),
+            missing_kinds=missing,
+        )
 
-    # Generic document-request: attach the cited evidence documents (org-scoped, shareable).
-    doc_ids: set[uuid.UUID] = set()
-    for c in cited:
-        if c.source_id and c.source_type in _DOCUMENT_SOURCE_TYPES:
-            try:
-                doc_ids.add(uuid.UUID(c.source_id))
-            except (ValueError, TypeError):
-                continue
-    if not doc_ids:
-        return [], [], set()
-    docs = list(
-        session.scalars(
-            select(Evidence).where(
-                Evidence.org_id == org_id,
-                Evidence.id.in_(doc_ids),
-                Evidence.customer_shareable.is_(True),
-            )
-        ).all()
+    # Generic document-request: never guess which document to disclose. Defer to a human and
+    # surface candidates to choose from.
+    return _DocResolution(
+        selection_required=True,
+        candidates=_candidate_documents(session, org_id, question),
     )
-    provided = [ProvidedDocument(document_id=str(d.id), title=d.title) for d in docs]
-    return provided, _findings_for(session, org_id, docs), set()
 
 
 def _needs_input_answer(
@@ -439,10 +482,12 @@ def generate_answer(
         )
     reused_only = is_affirmative and bool(reused) and not has_controlling
 
-    # Resolve provided documents + the remediation register for a document-request.
-    provided_docs, finding_statuses, missing_kinds = _resolve_documents_and_findings(
-        session, org.id, question, draft, cited
-    )
+    # Resolve a document-request (named → auto-attach the attestation; generic → defer to a
+    # human + surface candidates).
+    docs = _resolve_documents_and_findings(session, org.id, question, draft, cited)
+    provided_docs = docs.provided
+    finding_statuses = docs.findings
+    missing_kinds = docs.missing_kinds
     remediation_required = bool(finding_statuses)
 
     # Downgrade gate 2 — a provided report with an open finding and no target date can't
@@ -469,6 +514,9 @@ def generate_answer(
             f"requested document(s) not in the evidence corpus: {sorted(missing_kinds)}; "
             "a human must supply or decline"
         )
+    if docs.selection_required:
+        # Generic document-request — the analyst chooses which artifact(s) to attach (05 §8).
+        reasons.append("document selection required — choose the artifact(s) to attach")
     if reused_only:
         # Reuse of a human-approved answer is a candidate, not a bypass (principle 7): keep
         # the affirmative, but always re-confirm. Provenance is the cited approved_answer ref.
@@ -513,6 +561,8 @@ def generate_answer(
         evidence_refs=evidence_refs,
         requires_document=draft.requires_document or bool(provided_docs),
         provided_documents=provided_docs,
+        document_selection_required=docs.selection_required,
+        candidate_documents=docs.candidates,
         remediation_required=remediation_required,
         finding_refs=[f.finding_id for f in finding_statuses],
         confidence=score,
@@ -572,6 +622,8 @@ def persist_answer(
         evidence_refs=[ref.model_dump() for ref in ga.evidence_refs],
         requires_document=ga.requires_document,
         provided_documents=[d.model_dump() for d in ga.provided_documents],
+        document_selection_required=ga.document_selection_required,
+        candidate_documents=[c.model_dump() for c in ga.candidate_documents],
         remediation_required=ga.remediation_required,
         finding_refs=list(ga.finding_refs),
         mode=_MODE,
@@ -600,6 +652,7 @@ def persist_answer(
                 "needs_human_review": ga.needs_human_review,
                 "evidence_count": len(ga.evidence_refs),
                 "requires_document": ga.requires_document,
+                "document_selection_required": ga.document_selection_required,
                 "remediation_required": ga.remediation_required,
             },
         )

@@ -60,6 +60,19 @@ export const api = {
       },
     ),
 
+  // Attach analyst-selected documents to a generic document-request answer (resolved
+  // server-side; clears the "selection required" flag).
+  attachDocuments: (answerId: string, documentIds: string[]) =>
+    request<{
+      answer_id: string;
+      document_selection_required: boolean;
+      provided_documents: { document_id: string; title: string | null; download_url: string }[];
+    }>(`/answers/${answerId}/documents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ document_ids: documentIds }),
+    }),
+
   upload: (file: File) =>
     request<{ id: string; title: string; status: string }>(
       `/questionnaires?filename=${encodeURIComponent(file.name)}`,

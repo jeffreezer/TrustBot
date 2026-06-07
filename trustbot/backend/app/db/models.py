@@ -259,6 +259,13 @@ class Answer(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # [{"document_id", "title"}]; finding_refs holds finding ids.
     requires_document: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     provided_documents: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # Generic document-request (05 §8): attachment deferred to a human. The flag drives the
+    # review-pane picker; candidate_documents holds [{document_id, title, document_kind}]
+    # (org-scoped, customer_shareable, relevance-ranked). Cleared when the analyst attaches.
+    document_selection_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    candidate_documents: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     remediation_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     finding_refs: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     # Defaults to True: nothing is externally usable until a human signs off.

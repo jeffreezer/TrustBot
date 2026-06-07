@@ -54,6 +54,7 @@ export default function Workspace() {
   const [editText, setEditText] = useState("");
   const [reviewer, setReviewer] = useState(REVIEWER_DEFAULT);
   const [busy, setBusy] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [job, setJob] = useState<JobStatus | null>(null);
@@ -84,6 +85,7 @@ export default function Workspace() {
     setSelectedId(questionId);
     selectedIdRef.current = questionId;
     setQd(null);
+    setPicked([]);
     try {
       const data = await api.getQuestion(questionId);
       setQd(data);
@@ -164,6 +166,22 @@ export default function Workspace() {
     },
     [qd, reviewer, editText, loadDetail, selectQuestion, selectedId],
   );
+
+  const attachDocs = useCallback(async () => {
+    if (!qd?.answer || picked.length === 0) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      await api.attachDocuments(qd.answer.id, picked);
+      setMessage(`Attached ${picked.length} document${picked.length > 1 ? "s" : ""}.`);
+      setPicked([]);
+      if (selectedId) await selectQuestion(selectedId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to attach documents");
+    } finally {
+      setBusy(false);
+    }
+  }, [qd, picked, selectQuestion, selectedId]);
 
   const answer = qd?.answer ?? null;
   const undrafted = detail?.questions.filter((q) => q.status === "undrafted").length ?? 0;
@@ -275,6 +293,52 @@ export default function Workspace() {
                     onChange={(e) => setEditText(e.target.value)}
                     rows={10}
                   />
+                  {answer.document_selection_required && (
+                    <div className="docPicker">
+                      <strong>
+                        Document selection required — choose the artifact(s) to attach:
+                      </strong>
+                      {answer.candidate_documents &&
+                      answer.candidate_documents.length > 0 ? (
+                        <>
+                          <ul>
+                            {answer.candidate_documents.map((c) => (
+                              <li key={c.document_id}>
+                                <label>
+                                  <input
+                                    type="checkbox"
+                                    checked={picked.includes(c.document_id)}
+                                    onChange={(e) =>
+                                      setPicked((p) =>
+                                        e.target.checked
+                                          ? [...p, c.document_id]
+                                          : p.filter((x) => x !== c.document_id),
+                                      )
+                                    }
+                                  />
+                                  {c.document_kind && (
+                                    <span className="kind">{c.document_kind}</span>
+                                  )}{" "}
+                                  {c.title || "Document"}
+                                </label>
+                              </li>
+                            ))}
+                          </ul>
+                          <button
+                            type="button"
+                            disabled={busy || picked.length === 0}
+                            onClick={attachDocs}
+                          >
+                            Attach selected
+                          </button>
+                        </>
+                      ) : (
+                        <p className="muted">
+                          No customer-shareable documents available to attach.
+                        </p>
+                      )}
+                    </div>
+                  )}
                   {answer.provided_documents && answer.provided_documents.length > 0 && (
                     <div className="providedDocs">
                       <strong>

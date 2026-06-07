@@ -82,6 +82,17 @@ class ProvidedDocument(BaseModel):
     title: str | None = None
 
 
+class CandidateDocument(BaseModel):
+    """A selectable document offered to the analyst for a generic document-request (05 §8):
+    org-scoped, customer_shareable evidence, relevance-ranked, labeled by kind + title.
+    Providing a document is a disclosure decision — the system surfaces candidates and the
+    human chooses; nothing is attached automatically."""
+
+    document_id: str
+    title: str | None = None
+    document_kind: str | None = None
+
+
 class AnswerDraft(BaseModel):
     """Schema-enforced generator output. Unknown keys are ignored; a missing/invalid
     ``outcome`` fails validation and routes to the needs-input fallback. ``requires_document``
@@ -124,6 +135,10 @@ class GeneratedAnswer(BaseModel):
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
     requires_document: bool = False
     provided_documents: list[ProvidedDocument] = Field(default_factory=list)
+    # Generic document-request (05 §8): no specific artifact named, so attachment is deferred
+    # to a human. The answer text is still drafted; these surface the picker.
+    document_selection_required: bool = False
+    candidate_documents: list[CandidateDocument] = Field(default_factory=list)
     remediation_required: bool = False
     finding_refs: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)

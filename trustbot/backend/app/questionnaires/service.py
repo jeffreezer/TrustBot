@@ -323,6 +323,9 @@ def _answer_payload(session: Session, org: Organization, answer: Answer) -> dict
         "scope": answer.scope,
         "requires_document": answer.requires_document,
         "provided_documents": provided,
+        # Generic document-request picker (05 §8): the analyst chooses which to attach.
+        "document_selection_required": answer.document_selection_required,
+        "candidate_documents": answer.candidate_documents or [],
         "remediation_required": answer.remediation_required,
         "findings": findings,
         "confidence": answer.confidence,
@@ -617,6 +620,80 @@ def prepare_document_download(
         )
     )
     return evidence, object_key_from_storage_path(evidence.storage_path)
+
+
+def attach_documents(
+    session: Session,
+    *,
+    org: Organization,
+    answer_id: uuid.UUID,
+    document_ids: list[uuid.UUID],
+    actor: str = "user:review",
+) -> Answer:
+    """Attach analyst-selected documents to a generic document-request answer (05 §8); caller
+    commits.
+
+    Every selection is resolved server-side and fails closed: each id must be a real,
+    org-owned, **customer_shareable** Evidence record — anything that doesn't resolve, is
+    cross-org, or isn't shareable is rejected (nothing is attached). On success the answer's
+    ``provided_documents`` is set (plus any remediation the chosen docs carry), the
+    ``document_selection_required`` flag is cleared, and a ``document.attach`` audit row
+    (metadata only) is written.
+    """
+    answer = session.scalar(
+        select(Answer).where(Answer.id == answer_id, Answer.org_id == org.id)
+    )
+    if answer is None:
+        raise LookupError("answer not found")
+    if not document_ids:
+        raise ValueError("no documents selected")
+
+    # Resolve strictly: org-scoped + customer_shareable. A requested id that doesn't resolve
+    # to a shareable record (cross-org, non-shareable, or unknown) rejects the whole request.
+    unique_ids = list(dict.fromkeys(document_ids))
+    docs = session.scalars(
+        select(Evidence).where(
+            Evidence.org_id == org.id,
+            Evidence.id.in_(unique_ids),
+            Evidence.customer_shareable.is_(True),
+        )
+    ).all()
+    by_id = {d.id: d for d in docs}
+    if len(by_id) != len(unique_ids):
+        raise ValueError("one or more selected documents are not available to attach")
+
+    ordered = [by_id[i] for i in unique_ids]
+    answer.provided_documents = [
+        {"document_id": str(d.id), "title": d.title} for d in ordered
+    ]
+    # Render any remediation the chosen documents carry (org-scoped, shareable findings).
+    findings = session.scalars(
+        select(Finding).where(
+            Finding.org_id == org.id,
+            Finding.source_document_id.in_([d.id for d in ordered]),
+            Finding.customer_shareable.is_(True),
+        )
+    ).all()
+    answer.finding_refs = [str(f.id) for f in findings]
+    answer.remediation_required = bool(findings)
+    answer.document_selection_required = False
+
+    session.add(
+        AuditLog(
+            org_id=org.id,
+            actor=actor,
+            action="document.attach",
+            target_type="answer",
+            target_id=answer.id,
+            # Metadata only — the document ids selected + count, never document content.
+            payload={
+                "answer_id": str(answer.id),
+                "document_ids": [str(d.id) for d in ordered],
+                "count": len(ordered),
+            },
+        )
+    )
+    return answer
 
 
 # --- export -----------------------------------------------------------------

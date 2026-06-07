@@ -45,7 +45,7 @@ def _patch(monkeypatch, chunks, *, certs=frozenset(), freshness="current"):
     monkeypatch.setattr(gen, "_available_certs", lambda *a, **k: set(certs))
     monkeypatch.setattr(gen, "_freshness", lambda *a, **k: freshness)
     # These are DB-backed; stub them so the offline tests can't touch a (None) session.
-    monkeypatch.setattr(gen, "_resolve_documents_and_findings", lambda *a, **k: ([], [], set()))
+    monkeypatch.setattr(gen, "_resolve_documents_and_findings", lambda *a, **k: gen._DocResolution())
     monkeypatch.setattr(gen, "_resolve_reused_approvals", _stub_reused)
 
 

@@ -211,6 +211,50 @@ def review_answer(
     }
 
 
+class AttachDocumentsRequest(BaseModel):
+    document_ids: list[str] = Field(min_length=1, max_length=50)
+
+
+@router.post("/answers/{answer_id}/documents")
+def attach_documents(
+    answer_id: str,
+    req: AttachDocumentsRequest,
+    session: Session = Depends(get_session),
+    org: Organization = Depends(get_current_org),
+) -> dict:
+    """Attach analyst-selected documents to a generic document-request answer (05 §8).
+
+    Each selected id is resolved server-side and must be a real, org-owned, customer_shareable
+    Evidence record — anything that doesn't resolve, is cross-org, or isn't shareable rejects
+    the request (422) and nothing is attached. Clears the selection flag and audits the action.
+    """
+    doc_ids = [_to_uuid(d, "document") for d in req.document_ids]
+    try:
+        answer = service.attach_documents(
+            session,
+            org=org,
+            answer_id=_to_uuid(answer_id, "answer"),
+            document_ids=doc_ids,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="answer not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    session.commit()
+    return {
+        "answer_id": str(answer.id),
+        "document_selection_required": answer.document_selection_required,
+        "provided_documents": [
+            {
+                "document_id": d.get("document_id"),
+                "title": d.get("title"),
+                "download_url": f"/documents/{d.get('document_id')}/download",
+            }
+            for d in (answer.provided_documents or [])
+        ],
+    }
+
+
 @router.get("/documents/{document_id}/download")
 def download_document(
     document_id: str,

@@ -130,6 +130,14 @@ class Settings(BaseSettings):
     # an unbounded number of model calls.
     agent_max_subquestions: int = 8
 
+    # Prompt-injection hardening (Phase 8). Screening is on by default (guardrails-on secure
+    # default). Handling forks by posture: respond mode flags + neutralizes (answer still
+    # produced); review mode quarantines (flagged document excluded from retrieval until a
+    # human releases it). Both are built; these settings wire the per-mode default.
+    injection_screening_enabled: bool = True
+    injection_policy_respond: str = "flag_neutralize"
+    injection_policy_review: str = "quarantine"
+
     # Character-based chunking (token-free so tests need no tokenizer/model).
     # Overlap preserves context across chunk boundaries.
     chunk_size: int = 1200
@@ -239,6 +247,15 @@ class Settings(BaseSettings):
             raise ValueError("AGENT_MAX_TOOL_CALLS must be positive.")
         if self.agent_max_subquestions <= 0:
             raise ValueError("AGENT_MAX_SUBQUESTIONS must be positive.")
+        _policies = {"flag_neutralize", "quarantine"}
+        if self.injection_policy_respond not in _policies:
+            raise ValueError(
+                "INJECTION_POLICY_RESPOND must be 'flag_neutralize' or 'quarantine'."
+            )
+        if self.injection_policy_review not in _policies:
+            raise ValueError(
+                "INJECTION_POLICY_REVIEW must be 'flag_neutralize' or 'quarantine'."
+            )
 
         return self
 

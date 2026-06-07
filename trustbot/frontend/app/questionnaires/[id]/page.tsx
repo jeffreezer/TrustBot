@@ -285,6 +285,14 @@ export default function Workspace() {
                     )}
                   </div>
 
+                  {answer.injection_flagged && (
+                    <div className="injectionBanner">
+                      <strong>⚠ Prompt-injection content detected and neutralized.</strong>{" "}
+                      The injected instruction was treated as inert data and never executed; the
+                      answer is grounded in approved evidence and held for your review.
+                    </div>
+                  )}
+
                   {answer.needs_human_review && (
                     <div className="reviewBanner">
                       <strong>Needs human review.</strong>{" "}

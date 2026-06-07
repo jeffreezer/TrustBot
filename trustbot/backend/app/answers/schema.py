@@ -164,6 +164,9 @@ class GeneratedAnswer(BaseModel):
     review_reason: str | None = None
     freshness_status: str = "unknown"
     generated_by: str = ""
+    # Phase 8: injection-like content was detected (in the question or cited evidence),
+    # neutralized, and flagged for human review. The answer is still produced; nothing acted on.
+    injection_flagged: bool = False
     # Adaptive retrieval loop (06): which path gathered the evidence ("fixed" | "loop" |
     # "decomposed") and the ordered, metadata-only tool-call trail (audited; empty on the
     # fixed path). ``sub_answers`` holds the per-part breakdown for a decomposed answer.

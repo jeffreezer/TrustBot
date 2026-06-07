@@ -45,9 +45,15 @@ from ..providers import (
     get_generation_provider,
 )
 from ..retrieval import RetrievalFilters, RetrievedChunk, retrieve
+from ..security.injection import has_substance
 from .agent_tools import TOOL_SPECS, audit_view, execute_tool
 from .confidence import band_for, compute_confidence
-from .prompts import decompose_instructions, detect_injection, respond_system_instructions
+from .prompts import (
+    decompose_instructions,
+    neutralize,
+    respond_system_instructions,
+    screen,
+)
 from .schema import (
     RESPOND_DRAFTED,
     AnswerDraft,
@@ -126,12 +132,21 @@ def _grounding_from_retrieved(
                 fusion_score=rc.fusion_score,
             )
         )
+        # Phase 8 (neutralize): the model-facing grounding has injection directives redacted
+        # and obfuscation stripped, so a live instruction never reaches the model — even
+        # though it was already inert as fenced data. CitedEvidence keeps the RAW text so the
+        # boundary screen can still detect + flag it for the reviewer.
+        model_text = (
+            neutralize(rc.chunk_text)
+            if settings.injection_screening_enabled
+            else rc.chunk_text
+        )
         docs.append(
             GroundingDoc(
                 ref=ref,
                 source_type=rc.source_type,
                 title=str(title),
-                text=rc.chunk_text,
+                text=model_text,
                 customer_shareable=shareable,
             )
         )
@@ -421,6 +436,14 @@ def _normalize_ref(ref: str) -> str:
 
 # --- adaptive retrieval loop (Phase 6) -------------------------------------
 
+def _join_reason(existing: str | None, addition: str) -> str:
+    """Append a review reason, de-duplicating and preserving order."""
+    parts = [p for p in (existing or "").split("; ") if p]
+    if addition not in parts:
+        parts.append(addition)
+    return "; ".join(parts)
+
+
 # Cheap, deterministic routing cues: a compound / conditional / enumerated question goes to
 # the loop; a simple single-fact question keeps the one-shot path (no cost regression).
 _LOOP_CUES = re.compile(r"\bif\s+(?:yes|so|applicable|not|any)\b", re.IGNORECASE)
@@ -459,9 +482,28 @@ class _Gather:
     reason: str | None = None
     cited_all: list[CitedEvidence] = field(default_factory=list)
     grounding_refs: list[str] = field(default_factory=list)
-    injection_refs: set[str] = field(default_factory=set)
+    # ref -> metadata-only snippet for chunks whose RAW text screened as injection-like.
+    injection_findings: dict[str, str] = field(default_factory=dict)
     tool_audit: list[dict] = field(default_factory=list)
     path: str = "fixed"
+
+    @property
+    def injection_refs(self) -> set[str]:
+        return set(self.injection_findings)
+
+
+def _screen_chunks(cited_all: list[CitedEvidence]) -> dict[str, str]:
+    """Screen the RAW text of every gathered chunk; return {ref: snippet} for the flagged
+    ones (Phase 8 boundary screen — detection happens on raw text, the model only ever sees
+    the neutralized grounding)."""
+    if not settings.injection_screening_enabled:
+        return {}
+    findings: dict[str, str] = {}
+    for c in cited_all:
+        f = screen(c.text)
+        if f:
+            findings[c.chunk_id] = f.snippet
+    return findings
 
 
 def _parse_draft(raw: str) -> tuple[AnswerDraft | None, str | None]:
@@ -504,7 +546,7 @@ def _gather_fixed(
         reason=reason,
         cited_all=cited_all,
         grounding_refs=[d.ref for d in grounding],
-        injection_refs={c.chunk_id for c in cited_all if detect_injection(c.text)},
+        injection_findings=_screen_chunks(cited_all),
         path="fixed",
     )
 
@@ -569,7 +611,7 @@ def _gather_via_loop(
         reason=reason,
         cited_all=cited_all,
         grounding_refs=[c.chunk_id for c in cited_all],
-        injection_refs={c.chunk_id for c in cited_all if detect_injection(c.text)},
+        injection_findings=_screen_chunks(cited_all),
         tool_audit=audit,
         path="loop",
     )
@@ -608,29 +650,52 @@ def generate_answer(
     """Answer one questionnaire question. A simple question takes the one-shot path; a compound
     question is decomposed into atomic sub-questions, each answered independently through the
     full pipeline (loop + validators), then recomposed per-part (06 §5)."""
-    question = question.strip()
+    original_question = question.strip()
+    question = original_question
     generator = generator or get_generation_provider()
     generated_by = f"{_MODE}:{generator.name}"
     if not question:
         return _needs_input_answer(question, "Empty question.", generated_by)
 
-    # The question is untrusted inbound text. If it looks like it's trying to inject
-    # instructions, flag it for a human rather than answering it (CLAUDE.md: treat such
-    # content as data, never act on it).
-    if detect_injection(question):
-        return _needs_input_answer(
-            question,
-            "Question contains injection-like content; flagged for human review.",
-            generated_by,
-        )
+    # Phase 8 — the question is untrusted inbound text. Respond-mode policy is flag + neutralize
+    # (not block): screen it, redact any injected directive (it was already inert as data), and
+    # answer the legitimate ask from evidence, flagged for review. Only a question that is PURE
+    # injection (nothing answerable survives neutralization) falls to needs_input.
+    q_finding = (
+        screen(original_question) if settings.injection_screening_enabled else None
+    )
+    if q_finding:
+        question = neutralize(original_question)
+        if not has_substance(question):
+            ans = _needs_input_answer(
+                original_question,
+                "Question is injection-like with no answerable content; neutralized and "
+                f"flagged for human review: {q_finding.snippet}",
+                generated_by,
+            )
+            ans.injection_flagged = True
+            return ans
 
     # Compound question → decompose + answer each part independently + recompose. A simple
     # single-fact question is never decomposed and keeps the one-shot path (no cost regression).
     if settings.agent_loop_enabled and _supports_tools(generator) and _is_compound(question):
-        return _answer_compound(session, org, question, generator, generated_by, top_k=top_k)
-    return _answer_one(
-        session, org, question, generator, generated_by, top_k=top_k, use_loop=False
-    )
+        result = _answer_compound(
+            session, org, question, generator, generated_by, top_k=top_k
+        )
+    else:
+        result = _answer_one(
+            session, org, question, generator, generated_by, top_k=top_k, use_loop=False
+        )
+
+    # Apply the question-level injection flag (the chunk-level flag is applied per-part).
+    if q_finding:
+        result.injection_flagged = True
+        result.needs_human_review = True
+        result.review_reason = _join_reason(
+            result.review_reason,
+            "question contained injection-like content (neutralized): " + q_finding.snippet,
+        )
+    return result
 
 
 def _answer_one(
@@ -713,8 +778,19 @@ def _answer_one(
         available_certs=_available_certs(session, org.id),
         customer_facing=True,
     )
-    if injection_refs & {c.chunk_id for c in cited}:
-        reasons.append("cited evidence contains injection-like content; flagged for review")
+    flagged_cited = injection_refs & {c.chunk_id for c in cited}
+    injection_flagged = bool(flagged_cited)
+    if flagged_cited:
+        # Phase 8 flag (the directive was already neutralized out of the model-facing
+        # grounding); surface the snippet for the reviewer (metadata-only).
+        snippet = next(
+            (gathered.injection_findings[r] for r in flagged_cited if r in gathered.injection_findings),
+            "",
+        )
+        reasons.append(
+            "cited evidence contains injection-like content (neutralized)"
+            + (f": {snippet}" if snippet else "")
+        )
     if missing_kinds:
         # A requested artifact isn't in the corpus — never substitute; a human supplies or
         # declines (05 §7).
@@ -778,6 +854,7 @@ def _answer_one(
         confidence_factors=factors,
         needs_human_review=needs_review,
         review_reason=review_reason,
+        injection_flagged=injection_flagged,
         freshness_status=freshness_status,
         generated_by=generated_by,
         retrieval_path=gathered.path,
@@ -966,6 +1043,7 @@ def _recompose(
         confidence_factors={},
         needs_human_review=needs_review,
         review_reason=review_reason,
+        injection_flagged=any(p.injection_flagged for p in parts),
         freshness_status=freshness,
         generated_by=generated_by,
         retrieval_path="decomposed",
@@ -1031,6 +1109,7 @@ def persist_answer(
         outcome=ga.outcome.value,
         needs_human_review=ga.needs_human_review,
         review_reason=ga.review_reason,
+        injection_flagged=ga.injection_flagged,
         freshness_status=ga.freshness_status,
         generated_by=ga.generated_by,
     )
@@ -1057,6 +1136,7 @@ def persist_answer(
                 "retrieval_path": ga.retrieval_path,
                 "tool_call_count": len(ga.tool_calls),
                 "sub_answer_count": len(ga.sub_answers),
+                "injection_flagged": ga.injection_flagged,
             },
         )
     )

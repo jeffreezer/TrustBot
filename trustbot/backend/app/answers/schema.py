@@ -122,6 +122,20 @@ class EvidenceRef(BaseModel):
     title: str | None = None
 
 
+class SubAnswer(BaseModel):
+    """One atomic part of a decomposed compound answer (06): its own sub-question, outcome,
+    text, and citations, so the reviewer sees which evidence supports which part — and an
+    unsupported part is flagged, never silently dropped."""
+
+    sub_question: str
+    outcome: RespondOutcome
+    short_answer: str = ""
+    answer: str = ""
+    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+    needs_human_review: bool = True
+    review_reason: str | None = None
+
+
 class GeneratedAnswer(BaseModel):
     """The emitted, persisted answer. ``confidence`` is the composite score (NOT the rerank
     logit). Respond-mode attributes (05 §5): ``requires_document`` + ``provided_documents``
@@ -150,7 +164,9 @@ class GeneratedAnswer(BaseModel):
     review_reason: str | None = None
     freshness_status: str = "unknown"
     generated_by: str = ""
-    # Adaptive retrieval loop (06): which path gathered the evidence ("fixed" | "loop") and
-    # the ordered, metadata-only tool-call trail (audited; empty on the fixed path).
+    # Adaptive retrieval loop (06): which path gathered the evidence ("fixed" | "loop" |
+    # "decomposed") and the ordered, metadata-only tool-call trail (audited; empty on the
+    # fixed path). ``sub_answers`` holds the per-part breakdown for a decomposed answer.
     retrieval_path: str = "fixed"
     tool_calls: list[dict] = Field(default_factory=list)
+    sub_answers: list[SubAnswer] = Field(default_factory=list)

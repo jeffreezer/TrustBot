@@ -221,6 +221,23 @@ class FakeGenerationProvider(GenerationProvider):
     def supports_tools(self) -> bool:
         return True
 
+    def decompose(
+        self, *, question: str, instructions: str, max_parts: int
+    ) -> list[str]:
+        """Deterministic split for offline CI: break on sentence boundaries and semicolons.
+        The real model handles list-style ("X, Y, and Z?") decomposition live; this double
+        just exercises the per-part control flow without a network call."""
+        text = question.strip()
+        parts: list[str] = []
+        for sentence in re.split(r"(?<=[?.!])\s+", text):
+            for seg in re.split(r"\s*;\s*", sentence):
+                seg = seg.strip()
+                if seg:
+                    parts.append(seg if seg.endswith(("?", ".", "!")) else seg + "?")
+        if len(parts) <= 1:
+            return [text]  # nothing to split deterministically — answer as one
+        return parts[:max_parts]
+
     def agent_turn(
         self,
         *,

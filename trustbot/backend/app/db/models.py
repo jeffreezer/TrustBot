@@ -268,6 +268,10 @@ class Answer(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     candidate_documents: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     remediation_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     finding_refs: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # Per-part breakdown of a decomposed compound answer (06): a list of
+    # {sub_question, outcome, short_answer, answer, evidence_refs, needs_human_review,
+    # review_reason}. Empty for a single-part answer.
+    sub_answers: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     # Defaults to True: nothing is externally usable until a human signs off.
     needs_human_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     review_reason: Mapped[str | None] = mapped_column(Text)

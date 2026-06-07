@@ -292,6 +292,37 @@ export default function Workspace() {
                     </div>
                   )}
 
+                  {answer.sub_answers && answer.sub_answers.length > 0 && (
+                    <div className="subAnswers">
+                      <strong>Per-part breakdown</strong>
+                      <ol>
+                        {answer.sub_answers.map((s, i) => (
+                          <li key={i}>
+                            <div className="subQ">{s.sub_question}</div>
+                            <div className="subMeta">
+                              <span className={`outcome outcome-${s.outcome}`}>
+                                {s.outcome}
+                              </span>
+                              {s.needs_human_review && (
+                                <span className="needsReview">needs review</span>
+                              )}
+                              <span className="subCites">
+                                {s.evidence_refs.length} citation
+                                {s.evidence_refs.length === 1 ? "" : "s"}
+                              </span>
+                            </div>
+                            {s.outcome === "needs_input" && (
+                              <div className="subFlag">
+                                {s.review_reason ||
+                                  "No approved evidence substantiates this part."}
+                              </div>
+                            )}
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  )}
+
                   <label className="fieldLabel">Draft answer (editable)</label>
                   <textarea
                     className="answerBox"

@@ -108,16 +108,25 @@ def _check_gates(case: dict, ga: GeneratedAnswer) -> list[str]:
     if "perspective_self" in gates and outcome == RespondOutcome.NEEDS_INPUT:
         failures.append("perspective-resolved question fell to needs_input (lost grounding)")
 
-    # Adaptive loop — multi-part: WHEN the model answers a compound question it must address
-    # several parts (breadth of distinct cited sources) and flag any unsupported part for
-    # human review. A conservative whole-question needs_input is a safe (fail-closed) outcome,
-    # not a gate failure — so this enforces answer *quality*, never penalizing fail-safe.
-    if "multi_part" in gates and outcome != RespondOutcome.NEEDS_INPUT:
-        distinct = {ref.source_id or ref.chunk_id for ref in ga.evidence_refs}
-        if len(distinct) < 2:
-            failures.append("multi-part answer cites fewer than two distinct sources")
-        if not ga.needs_human_review:
-            failures.append("multi-part answer with an unsupported part not flagged for review")
+    # Adaptive loop — multi-part (STRICT, restored once explicit decomposition landed): a
+    # compound question must be decomposed and each SUPPORTABLE part answered with its own
+    # evidence; any genuinely unsupported part is flagged (not dropped). A whole-question
+    # needs_input collapse — when parts ARE supportable — is a failure again.
+    if "multi_part" in gates:
+        subs = ga.sub_answers
+        if outcome == RespondOutcome.NEEDS_INPUT:
+            failures.append(
+                "multi-part collapsed to a whole-question needs_input (supportable parts exist)"
+            )
+        elif len(subs) < 2:
+            failures.append("multi-part question was not decomposed into per-part answers")
+        else:
+            for s in subs:
+                if s.outcome != RespondOutcome.NEEDS_INPUT and not s.evidence_refs:
+                    failures.append(f"answered part has no citations: {s.sub_question[:60]!r}")
+            # An unsupported part must be flagged for review, never silently dropped.
+            if any(s.outcome == RespondOutcome.NEEDS_INPUT for s in subs) and not ga.needs_human_review:
+                failures.append("an unsupported part was not flagged for human review")
 
     # Adaptive loop — the document-request surfaces the SPECIFIC requested artifact (by
     # title), found by reformulating the query; never falls to needs_input, never an unrelated

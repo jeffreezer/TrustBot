@@ -205,13 +205,14 @@ cases:
       Please confirm each of the following: (1) Do you encrypt customer data at rest?
       (2) Do you perform background checks on personnel? (3) Do you hold ISO 27001
       certification? (4) Are you FedRAMP authorized?
-    expected_outcome: attested
+    expected_outcome: qualified
     expected_evidence: [encryption, HR1.1, ISO27001]
     gates: [multi_part]
     notes: >
-      Multi-hop gather: encryption-at-rest, personnel screening, and ISO 27001 are each
-      supported (distinct sources); FedRAMP is not, so the answer must be flagged for human
-      review. Addresses each part rather than collapsing to a single fact.
+      Decomposed into four atomic sub-questions. Encryption-at-rest, personnel screening, and
+      ISO 27001 are each supported (distinct sources, own citations); FedRAMP is not, so that
+      part is flagged for human review and the rest are answered — overall QUALIFIED (mixed
+      support), never a whole-question needs_input collapse.
 
   - id: NW-072
     # Compound but genuinely no-evidence: even with the loop, absent evidence -> needs_input.

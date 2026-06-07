@@ -46,8 +46,8 @@ from ..providers import (
 )
 from ..retrieval import RetrievalFilters, RetrievedChunk, retrieve
 from .agent_tools import TOOL_SPECS, audit_view, execute_tool
-from .confidence import compute_confidence
-from .prompts import detect_injection, respond_system_instructions
+from .confidence import band_for, compute_confidence
+from .prompts import decompose_instructions, detect_injection, respond_system_instructions
 from .schema import (
     RESPOND_DRAFTED,
     AnswerDraft,
@@ -58,6 +58,7 @@ from .schema import (
     GeneratedAnswer,
     ProvidedDocument,
     RespondOutcome,
+    SubAnswer,
 )
 from .validate import (
     CONTROLLING_SOURCE_TYPES,
@@ -428,9 +429,10 @@ _ENUM_LINE = re.compile(r"(?:^|\n)\s*(?:\d+[.)]|[-*•]|[a-d][.)])\s", re.MULTIL
 _ENUM_INLINE = re.compile(r"(?<!\d)[1-9][.)]\s+\S")
 
 
-def _route_to_loop(question: str) -> bool:
-    """True for compound/ambiguous questions worth the adaptive loop; False for simple
-    single-fact ones (06 §5 routing). Pure + cheap — no model call."""
+def _is_compound(question: str) -> bool:
+    """True for compound/conditional/enumerated questions that warrant decomposition; False
+    for a simple single-fact ask (06 §5 routing). Pure + cheap — no model call. A simple
+    question is never decomposed and keeps the one-shot path (no cost regression)."""
     q = question.strip()
     low = q.lower()
     if low.count("?") >= 2:  # multiple explicit sub-questions
@@ -573,6 +575,11 @@ def _gather_via_loop(
     )
 
 
+def _supports_tools(generator: GenerationProvider) -> bool:
+    fn = getattr(generator, "supports_tools", None)
+    return bool(callable(fn) and fn())
+
+
 def _gather(
     session: Session,
     org: Organization,
@@ -580,16 +587,12 @@ def _gather(
     generator: GenerationProvider,
     *,
     top_k: int | None,
+    use_loop: bool,
 ) -> _Gather:
-    """Route to the adaptive loop for compound questions (when enabled + the provider supports
-    tools); otherwise the one-shot path. Both coexist; simple questions stay one search."""
-    supports_tools = getattr(generator, "supports_tools", None)
-    if (
-        settings.agent_loop_enabled
-        and callable(supports_tools)
-        and supports_tools()
-        and _route_to_loop(question)
-    ):
+    """Gather evidence for ONE focused question. ``use_loop`` runs the adaptive loop (focused
+    reformulating searches, used per sub-question); otherwise the one-shot path. Both are
+    hard-gated to customer_shareable."""
+    if use_loop and settings.agent_loop_enabled and _supports_tools(generator):
         return _gather_via_loop(session, org, question, generator, top_k=top_k)
     return _gather_fixed(session, org, question, generator, top_k=top_k)
 
@@ -602,8 +605,9 @@ def generate_answer(
     top_k: int | None = None,
     generator: GenerationProvider | None = None,
 ) -> GeneratedAnswer:
-    """Draft and validate one evidence-grounded respond-mode answer (or a needs-input
-    fallback)."""
+    """Answer one questionnaire question. A simple question takes the one-shot path; a compound
+    question is decomposed into atomic sub-questions, each answered independently through the
+    full pipeline (loop + validators), then recomposed per-part (06 §5)."""
     question = question.strip()
     generator = generator or get_generation_provider()
     generated_by = f"{_MODE}:{generator.name}"
@@ -620,10 +624,29 @@ def generate_answer(
             generated_by,
         )
 
-    # Gather evidence — one-shot for a simple question, or the adaptive loop for a
-    # compound/ambiguous one — and get a structured draft. Customer-facing: every gather path
-    # is hard-gated to customer_shareable, so internal-only material never enters the answer.
-    gathered = _gather(session, org, question, generator, top_k=top_k)
+    # Compound question → decompose + answer each part independently + recompose. A simple
+    # single-fact question is never decomposed and keeps the one-shot path (no cost regression).
+    if settings.agent_loop_enabled and _supports_tools(generator) and _is_compound(question):
+        return _answer_compound(session, org, question, generator, generated_by, top_k=top_k)
+    return _answer_one(
+        session, org, question, generator, generated_by, top_k=top_k, use_loop=False
+    )
+
+
+def _answer_one(
+    session: Session,
+    org: Organization,
+    question: str,
+    generator: GenerationProvider,
+    generated_by: str,
+    *,
+    top_k: int | None,
+    use_loop: bool,
+) -> GeneratedAnswer:
+    """Answer ONE focused question through the full retrieve→draft→validate→resolve pipeline.
+    Used directly for a simple question (one-shot) and per sub-question for a compound one
+    (with the adaptive loop for its own focused searches)."""
+    gathered = _gather(session, org, question, generator, top_k=top_k, use_loop=use_loop)
     cited_all = gathered.cited_all
     grounding_refs = gathered.grounding_refs
     injection_refs = gathered.injection_refs
@@ -762,6 +785,195 @@ def generate_answer(
     )
 
 
+# --- explicit decomposition of compound questions (06 §5) ------------------
+
+# Worst-wins ordering for combining the per-part freshness signal.
+_FRESHNESS_RANK = {"current": 0, "unknown": 1, "review_due": 2, "stale": 3}
+
+
+def _decompose(
+    session: Session, org: Organization, question: str, generator: GenerationProvider
+) -> list[str]:
+    """Split a compound question into bounded atomic sub-questions (one model split step). On
+    any failure, degrade to the single question — never crash the answer path."""
+    try:
+        parts = generator.decompose(
+            question=question,
+            instructions=decompose_instructions(org.name),
+            max_parts=settings.agent_max_subquestions,
+        )
+    except Exception:  # noqa: BLE001 — a split failure degrades to one question, never fails closed-open
+        return [question]
+    cleaned = [p.strip() for p in parts if isinstance(p, str) and p.strip()]
+    return cleaned[: settings.agent_max_subquestions] or [question]
+
+
+def _answer_compound(
+    session: Session,
+    org: Organization,
+    question: str,
+    generator: GenerationProvider,
+    generated_by: str,
+    *,
+    top_k: int | None,
+) -> GeneratedAnswer:
+    """Decompose → answer each sub-question independently through the full pipeline → recompose
+    (06 §5). Each part gets focused grounding (its own adaptive loop) and the full validator
+    stack, rather than one model pass juggling everything."""
+    sub_questions = _decompose(session, org, question, generator)
+    if len(sub_questions) <= 1:
+        # Not splittable — answer the question once (still with the focused loop).
+        return _answer_one(
+            session, org, sub_questions[0] if sub_questions else question, generator,
+            generated_by, top_k=top_k, use_loop=True,
+        )
+    parts = [
+        _answer_one(session, org, sq, generator, generated_by, top_k=top_k, use_loop=True)
+        for sq in sub_questions
+    ]
+    return _recompose(question, sub_questions, parts, generated_by)
+
+
+def _recompose(
+    question: str,
+    sub_questions: list[str],
+    parts: list[GeneratedAnswer],
+    generated_by: str,
+) -> GeneratedAnswer:
+    """Combine independently-answered parts into one coherent, per-part answer (06 §5). Each
+    part keeps its own outcome + citations; an unsupported part is flagged, never dropped.
+
+    Combined outcome: all parts attested → attested; mixed support (some qualified/negative,
+    or some part unsupported) → qualified for what's supported (with the review flag); no part
+    supported → needs_input.
+    """
+    answered = [p for p in parts if p.outcome != RespondOutcome.NEEDS_INPUT]
+    unsupported_idx = [
+        i for i, p in enumerate(parts) if p.outcome == RespondOutcome.NEEDS_INPUT
+    ]
+    if not answered:
+        overall = RespondOutcome.NEEDS_INPUT
+    elif unsupported_idx or any(p.outcome != RespondOutcome.ATTESTED for p in answered):
+        overall = RespondOutcome.QUALIFIED
+    else:
+        overall = RespondOutcome.ATTESTED
+
+    subs = [
+        SubAnswer(
+            sub_question=sq,
+            outcome=p.outcome,
+            short_answer=p.short_answer,
+            answer=p.answer,
+            evidence_refs=list(p.evidence_refs),
+            needs_human_review=p.needs_human_review,
+            review_reason=p.review_reason,
+        )
+        for sq, p in zip(sub_questions, parts)
+    ]
+
+    blocks: list[str] = []
+    for i, (sq, p) in enumerate(zip(sub_questions, parts), start=1):
+        if p.outcome == RespondOutcome.NEEDS_INPUT:
+            body = "Needs human review — no approved evidence substantiates this part."
+        else:
+            body = (p.answer or p.short_answer or "").strip()
+        blocks.append(f"{i}. {sq}\n{body}")
+    answer_text = "\n\n".join(blocks)
+    n_flag = len(unsupported_idx)
+    short_answer = (
+        f"Addressed {len(parts)} parts: {len(answered)} answered"
+        + (f", {n_flag} need human review." if n_flag else ".")
+    )
+
+    # Union per-part citations (deduped); per-part attribution stays in sub_answers.
+    evidence_refs: list[EvidenceRef] = []
+    seen_refs: set[str] = set()
+    for p in parts:
+        for r in p.evidence_refs:
+            if r.chunk_id not in seen_refs:
+                seen_refs.add(r.chunk_id)
+                evidence_refs.append(r)
+
+    # Aggregate document-provision across parts.
+    provided: list[ProvidedDocument] = []
+    candidates: list[CandidateDocument] = []
+    finding_refs: list[str] = []
+    seen_docs: set[str] = set()
+    seen_cands: set[str] = set()
+    seen_findings: set[str] = set()
+    requires_document = selection_required = remediation_required = False
+    for p in parts:
+        requires_document = requires_document or p.requires_document
+        selection_required = selection_required or p.document_selection_required
+        remediation_required = remediation_required or p.remediation_required
+        for d in p.provided_documents:
+            if d.document_id not in seen_docs:
+                seen_docs.add(d.document_id)
+                provided.append(d)
+        for c in p.candidate_documents:
+            if c.document_id not in seen_cands:
+                seen_cands.add(c.document_id)
+                candidates.append(c)
+        for f in p.finding_refs:
+            if f not in seen_findings:
+                seen_findings.add(f)
+                finding_refs.append(f)
+
+    conf = min((p.confidence for p in answered), default=0.0)
+    band = band_for(conf) if answered else ConfidenceBand.NONE
+
+    freshness = "current"
+    worst = -1
+    for p in parts:
+        rank = _FRESHNESS_RANK.get(p.freshness_status or "unknown", 1)
+        if rank > worst:
+            worst, freshness = rank, (p.freshness_status or "unknown")
+
+    reasons: list[str] = []
+    if unsupported_idx:
+        reasons.append(
+            "unsupported part(s) flagged for human review: "
+            + "; ".join(sub_questions[i] for i in unsupported_idx)
+        )
+    reasons.extend(p.review_reason for p in answered if p.needs_human_review and p.review_reason)
+    needs_review = (
+        bool(unsupported_idx)
+        or any(p.needs_human_review for p in parts)
+        or overall != RespondOutcome.ATTESTED
+    )
+    review_reason = "; ".join(dict.fromkeys(reasons)) or None
+
+    tool_calls: list[dict] = [{"tool": "decompose", "sub_questions": list(sub_questions)}]
+    for p in parts:
+        tool_calls.extend(p.tool_calls)
+
+    return GeneratedAnswer(
+        question=question,
+        outcome=overall,
+        short_answer=short_answer,
+        answer=answer_text,
+        claim="",
+        scope="",
+        evidence_refs=evidence_refs,
+        requires_document=requires_document or bool(provided),
+        provided_documents=provided,
+        document_selection_required=selection_required,
+        candidate_documents=candidates,
+        remediation_required=remediation_required,
+        finding_refs=finding_refs,
+        confidence=conf,
+        confidence_band=band,
+        confidence_factors={},
+        needs_human_review=needs_review,
+        review_reason=review_reason,
+        freshness_status=freshness,
+        generated_by=generated_by,
+        retrieval_path="decomposed",
+        tool_calls=tool_calls,
+        sub_answers=subs,
+    )
+
+
 def _ad_hoc_question(session: Session, org: Organization, text: str) -> Question:
     """Get-or-create the ad-hoc questionnaire, then create a Question for this text.
 
@@ -813,6 +1025,7 @@ def persist_answer(
         candidate_documents=[c.model_dump() for c in ga.candidate_documents],
         remediation_required=ga.remediation_required,
         finding_refs=list(ga.finding_refs),
+        sub_answers=[s.model_dump() for s in ga.sub_answers],
         mode=_MODE,
         confidence=ga.confidence_band.value,
         outcome=ga.outcome.value,
@@ -843,6 +1056,7 @@ def persist_answer(
                 "remediation_required": ga.remediation_required,
                 "retrieval_path": ga.retrieval_path,
                 "tool_call_count": len(ga.tool_calls),
+                "sub_answer_count": len(ga.sub_answers),
             },
         )
     )

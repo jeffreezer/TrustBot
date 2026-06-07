@@ -391,6 +391,46 @@ a {
   border-radius: 4px;
   padding: 0 0.3rem;
 }
+.subAnswers {
+  margin: 0.75rem 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid #2b3650;
+  border-radius: 6px;
+  background: rgba(40, 52, 78, 0.25);
+}
+.subAnswers ol {
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+}
+.subAnswers li {
+  margin-bottom: 0.55rem;
+}
+.subAnswers .subQ {
+  font-size: 0.86rem;
+}
+.subAnswers .subMeta {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.2rem;
+  font-size: 0.72rem;
+}
+.subAnswers .outcome {
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: #93c5fd;
+}
+.subAnswers .needsReview {
+  color: #fbbf24;
+}
+.subAnswers .subCites {
+  color: #94a3b8;
+}
+.subAnswers .subFlag {
+  margin-top: 0.2rem;
+  font-size: 0.76rem;
+  color: #fca5a5;
+}
 .docPicker .recommended {
   margin-left: 0.4rem;
   font-size: 0.68rem;

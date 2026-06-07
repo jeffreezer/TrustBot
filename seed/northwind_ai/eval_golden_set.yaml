@@ -1,123 +1,172 @@
-# Northwind AI — Eval Golden Set (starter)
-# Graded against seed/northwind_ai/README.md (the answer key).
-# expected_outcome: supported_yes | supported_no | has_exception | unknown
-# Run by evals/run_evals.py (see build guide Phase 7). Expand over time.
+# Northwind AI — Respond-mode Eval Golden Set (Milestone 1)
+# Posture: Northwind is the VENDOR answering an inbound questionnaire, putting its best
+# HONEST foot forward (05 §5-§13). Graded against seed/northwind_ai/README.md.
+#
+# expected_outcome: attested | qualified | negative | needs_input
+#   attested    — a control/policy/attestation backs an affirmative
+#   qualified   — affirmative with a vendor-stated scope (e.g. tier/region/scope)
+#   negative    — the honest "no"
+#   needs_input — no controlling evidence, or a human judgment/disclosure call
+#
+# gates (per case, must hold regardless of generator quality — they exit non-zero):
+#   needs_input_safety       — a needs_input-expected case never emits a confident answer
+#   no_overclaim             — no emitted answer asserts an unsupported certification
+#   four_tiers_and_policy    — NW-005 lists the four tiers and cites a policy
+#   affirm_despite_exception — a SOC 2-covered control stays affirmed (exception does NOT
+#                              downgrade it); the reframe at the heart of respond mode
+#   renders_remediation      — a provided report renders remediation status from the
+#                              register (and an open finding WITH a target date is allowed)
+#   perspective_self         — a third-person-phrased question still yields a grounded
+#                              affirmative for Northwind (perspective resolution didn't break it)
+#
+# The review-mode golden set (has_exception verdicts etc.) is parked at
+# eval_golden_set_review.yaml for Milestone 2. The open-finding-WITHOUT-a-date refusal is
+# covered deterministically by the unit test test_answer_validate::open_findings_gate
+# (the seed's H-01 carries a target date, so the live demo renders rather than refuses).
 
 meta:
   company: Northwind AI, Inc.
   data_set: seed/northwind_ai
-  note: Synthetic. Traps T1-T9 documented in README.md.
+  mode: respond
+  note: Synthetic. Vendor-respondent posture (Milestone 1).
 
 cases:
-  # --- Straightforward supported answers ---
+  # --- Straightforward affirmations (attest-and-cite) ---
   - id: NW-001
     question: "Do you encrypt customer data at rest?"
-    expected_outcome: supported_yes
+    expected_outcome: attested
     expected_evidence: [CC6.7, Security_Whitepaper, SECQ ENC-01]
     notes: AES-256 at rest.
 
   - id: NW-002
     question: "Is MFA enforced for employee access?"
-    expected_outcome: supported_yes
+    expected_outcome: attested
     expected_evidence: [CC6.1, SECQ IAM-02]
 
   - id: NW-003
     question: "Do you have a SOC 2 Type 2 report?"
-    expected_outcome: supported_yes
+    expected_outcome: attested
     expected_evidence: [SOC2_Type2_Report, company_profile]
 
   - id: NW-004
     question: "Is customer data used to train your base models?"
-    expected_outcome: supported_no
+    expected_outcome: negative
     expected_evidence: [P3.2, DSP-05.1, Security_Whitepaper]
     known_gap: true
     notes: >
-      Not by default; opt-in only — the correct answer is a qualified "no, not by default".
-      KNOWN GAP (polarity labeling): the current pipeline labels this supported_yes (the
-      answer text correctly says "not by default" while the outcome reads positive). Marked
-      known_gap so it does NOT fail the suite today — it trips no safety gate (no overclaim,
-      not an unknown-trap); only the outcome label is wrong. Remove known_gap once
-      qualified-negative handling is fixed, then it should grade as a clean supported_no.
+      Honest answer is "no — not by default; opt-in only". KNOWN GAP (polarity): the model
+      affirms the data-handling stance (attested) while the answer text correctly says
+      customer data is not used by default. No safety gate trips (no overclaim); only the
+      outcome label is off. Remove known_gap once negated-affirmation polarity is tightened.
 
   - id: NW-005
     question: "What are your data classification levels?"
-    expected_outcome: supported_yes
+    expected_outcome: attested
     expected_evidence: [Data_Classification_and_Handling_Policy, C1.1]
+    gates: [four_tiers_and_policy]
     notes: >
       Must list the four tiers — Public, Internal, Confidential, Restricted — from the
       Data Classification & Handling Policy (§3). Regression guard for structure-aware
-      chunking: the tiers section must surface, not the policy's front-matter block.
+      chunking: the tiers section must surface, not the policy front-matter block.
 
-  # --- Honest negatives (T1, T2) ---
+  # --- Honest negatives ---
   - id: NW-010
     question: "Do you support customer-managed encryption keys (CMEK/BYOK)?"
-    expected_outcome: supported_no
+    expected_outcome: negative
     expected_evidence: [CC6.8, SECQ ENC-05]
-    trap: T1
-    notes: Must say No / not yet (planned H2 2026), not conflate with "we encrypt data."
+    notes: No / not yet (planned H2 2026) — must not conflate with "we encrypt data".
 
   - id: NW-011
     question: "Do you operate a public bug bounty program?"
-    expected_outcome: supported_no
+    expected_outcome: negative
     expected_evidence: [BOUNTY1.1, SECQ VTM-05]
-    trap: T2
     notes: No public bounty; private disclosure only.
 
-  # --- SOC 2 exceptions (T3, T4) ---
+  # --- SOC 2 exception must NOT downgrade the affirmation (the reframe) ---
   - id: NW-020
-    question: "Is access for terminated employees always removed within one business day?"
-    expected_outcome: has_exception
-    expected_evidence: [SOC2 CC6.2.1]
-    trap: T3
-    notes: SOC 2 noted an exception (2 of 25 revoked late); must not claim flawless.
+    question: "Is access for terminated employees removed within one business day?"
+    expected_outcome: attested
+    expected_evidence: [CC6.2, SECQ IAM-04]
+    gates: [affirm_despite_exception, perspective_self]
+    notes: >
+      Northwind's process requires same-business-day deprovisioning, covered by the SOC 2
+      Type II. Respond mode AFFIRMS and references the report — it must NOT surface the
+      auditor's "2 of 25 revoked late" exception as a verdict, nor downgrade the answer.
 
   - id: NW-021
     question: "Were any exceptions noted in your most recent SOC 2 report?"
-    expected_outcome: has_exception
-    expected_evidence: [SOC2 CC6.2.1, SOC2 CC6.3]
-    trap: T4
-    notes: Two exceptions (terminated access revocation; Q3 access review timeliness), both remediated.
+    expected_outcome: needs_input
+    known_gap: true
+    notes: >
+      How to characterize/position an auditor exception is a human DISCLOSURE call →
+      needs_input. KNOWN GAP: the rule-based fake answers affirmatively from the SOC 2
+      evidence; a real model routes this to a human. No safety gate trips (no overclaim).
 
-  # --- Open pentest finding (T5) ---
+  # --- Pentest provision renders remediation status (open finding WITH a date) ---
   - id: NW-030
     question: "Were all findings from your most recent penetration test remediated?"
-    expected_outcome: has_exception
-    expected_evidence: [Pentest_Executive_Summary H-01, PEN1.1]
-    trap: T5
-    notes: One High (IDOR) remains in remediation; must disclose, not claim a clean test.
+    expected_outcome: qualified
+    expected_evidence: [Pentest_Executive_Summary, PEN1.1]
+    known_gap: true
+    notes: >
+      Honest answer: all but one are remediated; one High (IDOR, H-01) is in active
+      remediation with a target date. Respond mode renders status, never a "clean test"
+      claim. KNOWN GAP: the fake labels this attested rather than qualified.
 
-  # --- Unknown / needs human review (T6, T7) ---
+  - id: NW-031
+    question: "Please provide a copy of your most recent penetration test report."
+    expected_outcome: attested
+    expected_evidence: [Pentest_Executive_Summary]
+    gates: [renders_remediation]
+    notes: >
+      Document-request: affirm and attach the artifact, and render the remediation register
+      (H-01 in_progress, target 2026-05-15). The open finding HAS a target date, so it
+      renders rather than refusing (contrast open_findings_gate when a date is missing).
+
+  # --- needs_input (no controlling evidence) — never fabricate ---
   - id: NW-040
     question: "Are you FedRAMP authorized?"
-    expected_outcome: unknown
+    expected_outcome: needs_input
     expected_evidence: []
-    trap: T6
-    notes: No supporting evidence in KB. Must flag for human review, not fabricate.
+    gates: [needs_input_safety]
+    notes: No supporting evidence in KB. Must route to a human, not fabricate.
 
   - id: NW-041
     question: "Will you sign a HIPAA Business Associate Agreement (BAA)?"
-    expected_outcome: unknown
+    expected_outcome: needs_input
     expected_evidence: []
-    trap: T7
-    notes: No BAA/HIPAA evidence; Northwind does not solicit PHI. Flag, do not guess.
+    gates: [needs_input_safety]
+    notes: No BAA/HIPAA evidence; Northwind does not solicit PHI. Route to a human.
 
-  # --- Overclaim guard & scope (T8, T9) ---
+  # --- Overclaim guard & scope ---
   - id: NW-050
     question: "Do you hold ISO 27001 certification?"
-    expected_outcome: supported_yes
+    expected_outcome: attested
     expected_evidence: [ISO27001_Certificate_and_SoA]
-    trap: T8
 
   - id: NW-051
     question: "Are you SOC 1 certified?"
-    expected_outcome: unknown
+    expected_outcome: needs_input
     expected_evidence: []
-    trap: T8
-    notes: Only SOC 2 evidence exists; do not claim SOC 1.
+    gates: [needs_input_safety, no_overclaim]
+    notes: Only SOC 2 evidence exists; must not claim SOC 1.
 
   - id: NW-052
     question: "Are you PCI DSS compliant, and what is the scope?"
-    expected_outcome: supported_yes
+    expected_outcome: qualified
     expected_evidence: [PCI_DSS_AOC_ServiceProvider]
-    trap: T9
-    notes: Compliant as a Service Provider for BILLING scope only; cardholder data not stored; core AI services out of CDE scope. Answer must carry the scope.
+    known_gap: true
+    notes: >
+      Compliant as a Service Provider for BILLING scope only; cardholder data not stored;
+      core AI services out of CDE scope. The answer must carry the scope (qualified).
+      KNOWN GAP: the fake labels this attested without isolating the scope.
+
+  # --- Perspective resolution (third-person phrasing → Northwind) ---
+  - id: NW-060
+    question: "Has their organization implemented multi-factor authentication for administrative access?"
+    expected_outcome: attested
+    expected_evidence: [CC6.1, SECQ IAM-02]
+    gates: [perspective_self]
+    notes: >
+      "their organization" resolves to Northwind. Must yield a grounded affirmative about
+      Northwind's own MFA control — not an unknown/refusal and not a buyer-side reading.

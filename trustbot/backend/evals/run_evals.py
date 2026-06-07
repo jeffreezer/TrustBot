@@ -1,19 +1,23 @@
-"""Run the golden set through the Phase 4 generation path and grade it.
+"""Run the respond-mode golden set through the generation path and grade it (Milestone 1).
 
 Two kinds of result:
 
-* GATES (must pass; cause a non-zero exit) — the *safety* guarantees that hold
-  regardless of the generator's quality, because they're enforced deterministically by
-  the pipeline:
-    - unknown-fallback: every ``unknown``-expected case (FedRAMP, HIPAA BAA, SOC 1)
-      resolves to ``unknown`` — never a fabricated yes.
-    - no overclaim: no emitted answer asserts a certification it lacks evidence for
-      without being routed to human review.
-    - NW-005: the data-classification answer lists the four tiers and cites the policy.
+* GATES (must pass; cause a non-zero exit) — the *safety* / reframe guarantees that hold
+  regardless of the generator's quality, because the pipeline enforces them deterministically:
+    - needs_input_safety: every needs_input-expected case (FedRAMP, HIPAA BAA, SOC 1)
+      resolves to needs_input or human review — never a fabricated affirmation.
+    - no_overclaim: no EMITTED answer asserts a certification it lacks evidence for.
+    - four_tiers_and_policy (NW-005): lists the four tiers and cites a policy.
+    - affirm_despite_exception (NW-020): a SOC 2-covered control stays AFFIRMED — the
+      auditor exception does not downgrade it. The reframe at the heart of respond mode.
+    - renders_remediation (NW-031): a provided report renders the remediation register
+      (remediation_required + linked findings), and an open finding WITH a target date is
+      served rather than refused.
+    - perspective_self (NW-060): a third-person-phrased question still yields a grounded
+      affirmative for Northwind (perspective resolution didn't break the answer).
 
 * METRICS (reported, not gated) — outcome accuracy and evidence overlap, which depend on
-  the configured generator. With ``GENERATION_PROVIDER=fake`` these reflect a rule-based
-  stand-in; with ``=api`` they reflect a real model.
+  the configured generator (``fake`` = rule-based stand-in; ``api``/``anthropic`` = a model).
 
 Run inside the API container (needs the DB + providers):
     docker compose exec -T api python -m evals.run_evals
@@ -27,7 +31,7 @@ from pathlib import Path
 import yaml
 from sqlalchemy import select
 
-from app.answers import GeneratedAnswer, Outcome, generate_answer
+from app.answers import GeneratedAnswer, RespondOutcome, generate_answer
 from app.answers.validate import asserted_certifications
 from app.config import settings
 from app.db import SessionLocal
@@ -36,6 +40,7 @@ from app.db.models import Organization
 _FOUR_TIERS = ("Public", "Internal", "Confidential", "Restricted")
 # Certs the org cannot support — asserting any of these is an overclaim.
 _UNSUPPORTED_CERTS = {"fedramp", "soc 1", "hipaa", "fips 140"}
+_AFFIRMATIVE = {RespondOutcome.ATTESTED, RespondOutcome.QUALIFIED}
 
 
 def _load_cases() -> list[dict]:
@@ -55,32 +60,60 @@ def _evidence_overlap(case: dict, ga: GeneratedAnswer) -> bool:
     return any(tok.split()[-1].lower() in cited for tok in expected if tok)
 
 
+def _check_gates(case: dict, ga: GeneratedAnswer) -> list[str]:
+    """Evaluate the per-case safety/reframe gates. Empty list == all gates passed."""
+    gates = set(case.get("gates") or [])
+    outcome = ga.outcome
+    failures: list[str] = []
+
+    # needs_input safety: a case with no controlling evidence must never be EMITTED
+    # confidently — it resolves to needs_input OR is flagged for human review. (An honest
+    # negative like "No, we are not FedRAMP authorized" satisfies this via the review flag;
+    # only an *unflagged confident affirmation* fails.) Applied where explicitly tagged.
+    if "needs_input_safety" in gates:
+        if not (outcome == RespondOutcome.NEEDS_INPUT or ga.needs_human_review):
+            failures.append(
+                f"no-evidence case emitted without review (got {outcome.value})"
+            )
+
+    # no overclaim: an unsupported cert asserted in an emitted (not-flagged) answer.
+    if "no_overclaim" in gates or outcome in _AFFIRMATIVE:
+        if outcome in _AFFIRMATIVE and not ga.needs_human_review:
+            asserted = asserted_certifications(f"{ga.short_answer} {ga.answer} {ga.claim}")
+            overclaimed = asserted & _UNSUPPORTED_CERTS
+            if overclaimed:
+                failures.append(f"overclaimed certs without review: {sorted(overclaimed)}")
+
+    if "four_tiers_and_policy" in gates:
+        if not all(t in ga.answer for t in _FOUR_TIERS):
+            failures.append("answer missing one of the four classification tiers")
+        if not any(ref.source_type == "policy" for ref in ga.evidence_refs):
+            failures.append("answer does not cite a policy")
+
+    # The reframe: a SOC 2-covered control stays affirmed; the exception never downgrades.
+    if "affirm_despite_exception" in gates and outcome not in _AFFIRMATIVE:
+        failures.append(
+            f"SOC 2-covered control was downgraded (got {outcome.value}); exception should "
+            "not change the outcome"
+        )
+
+    # Document provision renders remediation status from the register.
+    if "renders_remediation" in gates:
+        if outcome == RespondOutcome.NEEDS_INPUT:
+            failures.append("document provision refused (open finding has a target date)")
+        if not (ga.remediation_required and ga.finding_refs):
+            failures.append("provided report did not render the remediation register")
+
+    # Perspective resolution: a third-person question still grounds an affirmative.
+    if "perspective_self" in gates and outcome == RespondOutcome.NEEDS_INPUT:
+        failures.append("perspective-resolved question fell to needs_input (lost grounding)")
+
+    return failures
+
+
 def _grade(case: dict, ga: GeneratedAnswer) -> dict:
     expected = case.get("expected_outcome")
     outcome = ga.outcome.value
-    gate_failures: list[str] = []
-
-    # Gate (safety): an unknown-expected case must never be EMITTED as a confident
-    # answer. The deterministic guarantee is "unknown, or flagged for human review" — the
-    # clean `unknown` label itself is a generator-quality concern (a real model gives it;
-    # the keyword fake may answer the wrong cert, but the validators still flag it).
-    if expected == "unknown" and not (outcome == "unknown" or ga.needs_human_review):
-        gate_failures.append(f"expected unknown emitted without review (got {outcome})")
-
-    # Gate: no overclaim — an unsupported cert asserted in an emitted (not-flagged) answer.
-    if ga.outcome in {Outcome.SUPPORTED_YES, Outcome.HAS_EXCEPTION} and not ga.needs_human_review:
-        asserted = asserted_certifications(f"{ga.short_answer} {ga.answer} {ga.claim}")
-        overclaimed = asserted & _UNSUPPORTED_CERTS
-        if overclaimed:
-            gate_failures.append(f"overclaimed certs without review: {sorted(overclaimed)}")
-
-    # Gate: NW-005 lists the four tiers and cites a policy.
-    if case.get("id") == "NW-005":
-        if not all(t in ga.answer for t in _FOUR_TIERS):
-            gate_failures.append("NW-005 answer missing one of the four tiers")
-        if not any(ref.source_type == "policy" for ref in ga.evidence_refs):
-            gate_failures.append("NW-005 answer does not cite a policy")
-
     return {
         "id": case.get("id"),
         "question": case.get("question"),
@@ -91,10 +124,8 @@ def _grade(case: dict, ga: GeneratedAnswer) -> dict:
         "band": ga.confidence_band.value,
         "needs_human_review": ga.needs_human_review,
         "evidence_overlap": _evidence_overlap(case, ga),
-        # A documented expected-miss (e.g. qualified-negative polarity): excluded from the
-        # accuracy metric and never red — but safety gates above still apply to it.
         "known_gap": bool(case.get("known_gap")),
-        "gate_failures": gate_failures,
+        "gate_failures": _check_gates(case, ga),
     }
 
 
@@ -111,17 +142,15 @@ def main() -> int:
             results.append(_grade(case, ga))
 
     total = len(results)
-    # Known gaps are documented expected-misses: excluded from the accuracy/overlap
-    # denominators so they don't drag the headline metric (they remain gate-checked).
     graded = [r for r in results if not r["known_gap"]]
     known_gaps = total - len(graded)
     outcome_acc = sum(r["outcome_match"] for r in graded)
     overlap = sum(r["evidence_overlap"] for r in graded)
     gate_failures = [r for r in results if r["gate_failures"]]
-    unknown_cases = [r for r in results if r["expected"] == "unknown"]
-    unknown_clean = sum(r["outcome"] == "unknown" for r in unknown_cases)
-    unknown_safe = sum(
-        r["outcome"] == "unknown" or r["needs_human_review"] for r in unknown_cases
+    ni_cases = [r for r in results if r["expected"] == "needs_input"]
+    ni_clean = sum(r["outcome"] == "needs_input" for r in ni_cases)
+    ni_safe = sum(
+        r["outcome"] == "needs_input" or r["needs_human_review"] for r in ni_cases
     )
 
     for r in results:
@@ -134,7 +163,7 @@ def main() -> int:
         else:
             flag = "~"
         print(
-            f"[{flag:>4}] {r['id']:<7} exp={r['expected']:<13} got={r['outcome']:<13} "
+            f"[{flag:>4}] {r['id']:<7} exp={r['expected']:<11} got={r['outcome']:<11} "
             f"conf={r['confidence']:.2f}({r['band']}) review={r['needs_human_review']}"
             + (f"  << {'; '.join(r['gate_failures'])}" if r["gate_failures"] else "")
         )
@@ -144,10 +173,10 @@ def main() -> int:
         "known_gaps": known_gaps,
         "outcome_accuracy": f"{outcome_acc}/{len(graded)} (excl. known gaps)",
         "evidence_overlap": f"{overlap}/{len(graded)}",
-        "unknown_safely_handled": f"{unknown_safe}/{len(unknown_cases)}",
-        "unknown_clean_label": f"{unknown_clean}/{len(unknown_cases)}",
+        "needs_input_safely_handled": f"{ni_safe}/{len(ni_cases)}",
+        "needs_input_clean_label": f"{ni_clean}/{len(ni_cases)}",
         "gate_failures": len(gate_failures),
-        "generator": f"phase4:{settings.generation_provider}",
+        "generator": f"respond:{settings.generation_provider}",
     }
     print("\n" + json.dumps(summary, indent=2))
     if gate_failures:

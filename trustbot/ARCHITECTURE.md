@@ -474,6 +474,53 @@ Manager. The same image runs locally and in the cloud — only env changes (12-f
 
 ---
 
+## Milestone 1 — respond mode (the posture fork)
+
+The product drifted into a reviewer/assessor voice (leading with "Has Exception", surfacing
+SOC 2 auditor exceptions as verdicts, returning `unknown` on Northwind's *own* practices).
+The fix (`05_TrustBot_Respond_Mode_Design.md`) is a **reframe**, not a rewrite: TrustBot
+answers **as the vendor**, putting its best *honest* foot forward, while the reviewer
+behavior is parked for Milestone 2.
+
+- **Fork by posture, don't delete.** Respond mode is the active pipeline; the review-mode
+  `Outcome` enum, its prompt, and the parked `exceptions`/`outcome` columns stay in place so
+  M2 forks back onto them. The fork is at the generation step (system prompt + outcome
+  taxonomy + validators) and the eval golden set; ingestion, retrieval, the review
+  workspace, async jobs, the tenancy seam, audit log, and the provider abstraction are
+  unchanged and shared.
+- **Respond taxonomy** (`RespondOutcome`): `attested | qualified | negative | needs_input`.
+  `has_exception` is intentionally gone — a SOC 2 exception never changes the outcome (the
+  report self-contains it via management responses). `needs_input` is the fail-closed
+  fallback (replaces review-mode `unknown`).
+- **Perspective resolution.** The system prompt states the respondent identity explicitly
+  and binds every "you / your / their / the organization / the vendor" to Northwind, so a
+  templated third-person question still drafts a grounded affirmative about Northwind's own
+  controls (verified: NW-060).
+- **Anti-fabrication, reframed.** Two deterministic **downgrade gates** run before persist:
+  (1) an `attested`/`qualified` answer must cite ≥1 *controlling* owned policy/control/
+  attestation (a reused approved answer or marketing profile does **not** control) — else it
+  falls to `needs_input`; (2) a provided report with an **open finding lacking a target
+  date** falls to `needs_input`. The other validators (cert overclaim, hallucinated
+  citation, internal-only leak) remain *review flags* that keep the answer but force review.
+- **Remediation register.** A `findings` table holds structured pentest/SOC 2/audit findings
+  (severity stored verbatim + a sort-only `severity_rank`; `customer_shareable` + an
+  internal-only `owner`). A document-provision answer renders current remediation status from
+  the register — the drafter never invents closure dates. An open finding **with** a target
+  date renders; **without** one it refuses (`open_findings_gate`).
+- **Document resolution is server-side.** The model only flags `requires_document`; the
+  pipeline resolves which org-scoped, `customer_shareable` documents the *cited* evidence
+  maps to (never a model-named id) and which findings they carry.
+- **Document access is identity-gated + audited, never a bearer link.**
+  `GET /documents/{id}/download` is org-scoped and **fails closed to 404** for cross-org,
+  not-shareable, or not-referenced-by-an-approved-answer (default deny, no existence leak).
+  Being `customer_shareable` is necessary but not sufficient — a human must have *approved* an
+  answer that provides the document. Bytes stream via the storage adapter's
+  `get_object_stream`; each access writes a `document.download` audit row carrying metadata
+  only (who/org, document id, ip, timestamp). The presigned-URL path is retained in the
+  adapter but unused by the product surface.
+
+---
+
 ## Deferred to later phases (explicitly not built yet)
 
 - The **agentic retrieval loop** (Phase 6) — a `search_knowledge_base` tool the model

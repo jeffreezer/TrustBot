@@ -60,6 +60,16 @@ Exposed to the single agent via the model's native tool-calling. Every tool enfo
 
 **Routing (optional, per the Phase 6 stub):** a cheap classifier can send simple single-fact questions down the Phase 4 fixed path and only compound/ambiguous ones into the loop, so both coexist and cost stays controlled.
 
+### 5.1 Multi-part decomposition (compound questions)
+
+Compound questions ("describe encryption at rest, key management, and rotation") are handled by **explicit decomposition** — not by asking the model to juggle all parts in one pass, which flakes and can collapse the whole question to `needs_input`:
+
+1. **Route + split.** The classifier flags a question as compound; a bounded split step (`Provider.decompose`, capped at `AGENT_MAX_SUBQUESTIONS` = 8, fail-safe to the single question) produces atomic sub-questions. Simple questions are not decomposed (one-shot, no cost regression).
+2. **Answer each sub-question independently** through the full single-question pipeline — its own focused adaptive loop **plus the complete validator stack** (acceptable-basis gate, approved-answer reuse, open-finding-date, document resolution) — yielding a per-part outcome and per-part citations.
+3. **Recompose** into one coherent answer with per-part citations (`sub_answers`), aggregating document provision + the tool-call audit across parts. **Combined-outcome rule:** all parts `attested` → `attested`; mixed support / any part unsupported → `qualified` for what's supported with `needs_human_review = true`; no part supported → `needs_input`. An unsupported part is **always flagged, never dropped**, and the supported parts never collapse with it.
+
+This is what makes the strict `multi_part` eval gate robust: focused per-part grounding means a single evidence-less part no longer sinks the whole answer.
+
 ---
 
 ## 6. Auditability

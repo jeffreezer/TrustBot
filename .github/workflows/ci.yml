@@ -1,0 +1,115 @@
+name: CI
+
+# Runs on every push and pull request. Fully offline and deterministic — no network calls to
+# model providers, no API key, no model-weight download. Providers are forced to the
+# deterministic fakes (GENERATION_PROVIDER=fake, EMBEDDING_PROVIDER=hash, RERANKER_PROVIDER=
+# hash) and Hugging Face is pinned offline, so the run is fast and reproducible. The build
+# fails on any test, lint, typecheck, or eval-gate failure.
+on:
+  push:
+  pull_request:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (lint, tests, eval gate)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: trustbot/backend
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: trustbot
+          POSTGRES_PASSWORD: trustbot
+          POSTGRES_DB: trustbot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U trustbot -d trustbot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # Dev gate (so config doesn't demand prod secrets); local-only throwaway creds.
+      APP_ENV: test
+      DATABASE_URL: postgresql+psycopg://trustbot:trustbot@localhost:5432/trustbot
+      TEST_DATABASE_URL: postgresql+psycopg://trustbot:trustbot@localhost:5432/trustbot
+      STORAGE_BACKEND: local
+      # Deterministic, offline providers — no model weights, no network, no API key.
+      GENERATION_PROVIDER: fake
+      EMBEDDING_PROVIDER: hash
+      RERANKER_PROVIDER: hash
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      # Seed + eval read the synthetic golden corpus from the repo (absolute path).
+      SEED_DATA_DIR: ${{ github.workspace }}/seed/northwind_ai
+      # Eval gate config (offline mode skips requires_model cases; 90% accuracy floor).
+      EVAL_OFFLINE: "1"
+      EVAL_ACCURACY_FLOOR: "0.90"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: trustbot/backend/requirements-dev.txt
+
+      - name: Install backend deps (no model weights)
+        # requirements-dev.txt pulls requirements.txt + pytest/ruff/httpx — NOT the heavy
+        # torch/transformers stack (requirements-models.txt), which CI never needs offline.
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check app/ tests/ evals/
+
+      - name: Shellcheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck entrypoint.sh bake_models.sh ../../deploy/gcp/deploy.sh
+
+      - name: Apply migrations
+        run: alembic upgrade head
+
+      - name: Tests (offline + DB-backed)
+        # `python -m pytest` puts the working dir (the backend package root) on sys.path so
+        # `import app` resolves without an editable install.
+        run: python -m pytest -q
+
+      - name: Seed demo corpus (hash embeddings, offline)
+        run: python -m app.seed
+
+      - name: Eval gate (offline fake/hash)
+        # Fails the build on ANY safety-gate failure (zero tolerance) or outcome accuracy
+        # below the floor. Prints a clear summary + a machine-readable EVAL_RESULT_JSON line.
+        run: python -m evals.run_evals --offline
+
+  frontend:
+    name: Frontend (typecheck)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: trustbot/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: trustbot/frontend/package-lock.json
+
+      - name: Install deps (clean, from lockfile)
+        run: npm ci
+
+      - name: Typecheck (tsc, strict)
+        run: npx tsc --noEmit

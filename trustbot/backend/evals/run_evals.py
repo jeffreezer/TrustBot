@@ -25,6 +25,7 @@ Run inside the API container (needs the DB + providers):
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -171,17 +172,44 @@ def _grade(case: dict, ga: GeneratedAnswer) -> dict:
     }
 
 
-def main() -> int:
+def _parse_args(argv: list[str]):
+    import argparse
+
+    truthy = ("1", "true", "yes", "on")
+    parser = argparse.ArgumentParser(description="Run + grade the respond-mode golden set.")
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        default=os.getenv("EVAL_OFFLINE", "").strip().lower() in truthy,
+        help=(
+            "CI mode: skip cases tagged requires_model (they need semantic retrieval / model "
+            "reformulation the deterministic fake/hash stack can't reproduce)."
+        ),
+    )
+    parser.add_argument(
+        "--floor",
+        type=float,
+        default=float(os.getenv("EVAL_ACCURACY_FLOOR", "0.90")),
+        help="Minimum outcome accuracy (0-1, excl. known gaps) below which the gate fails.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv if argv is not None else sys.argv[1:])
     cases = _load_cases()
+    skipped = [c for c in cases if args.offline and c.get("requires_model")]
+    run_cases = [c for c in cases if not (args.offline and c.get("requires_model"))]
+
     with SessionLocal() as session:
         org = session.scalar(select(Organization).limit(1))
         if org is None:
             print("No seeded org; run the seed first.")
             return 2
-        results = []
-        for case in cases:
-            ga = generate_answer(session, org=org, question=case["question"])
-            results.append(_grade(case, ga))
+        results = [
+            _grade(case, generate_answer(session, org=org, question=case["question"]))
+            for case in run_cases
+        ]
 
     total = len(results)
     graded = [r for r in results if not r["known_gap"]]
@@ -189,13 +217,9 @@ def main() -> int:
     outcome_acc = sum(r["outcome_match"] for r in graded)
     overlap = sum(r["evidence_overlap"] for r in graded)
     gate_failures = [r for r in results if r["gate_failures"]]
-    # No-evidence cases (FedRAMP / HIPAA / SOC 1): per 05 an honest "no" is the correct
-    # outcome, so they're graded as `negative` — but they must never be EMITTED confidently.
-    # Track the share that resolves to needs_input OR is flagged for human review.
-    safety_cases = [r for r in results if "needs_input_safety" in r["gates"]]
-    safety_ok = sum(
-        r["outcome"] == "needs_input" or r["needs_human_review"] for r in safety_cases
-    )
+    accuracy = (outcome_acc / len(graded)) if graded else 1.0
+    accuracy_ok = accuracy >= args.floor
+    passed = not gate_failures and accuracy_ok
 
     for r in results:
         if r["gate_failures"]:
@@ -213,20 +237,45 @@ def main() -> int:
         )
 
     summary = {
-        "cases": total,
-        "known_gaps": known_gaps,
-        "outcome_accuracy": f"{outcome_acc}/{len(graded)} (excl. known gaps)",
-        "evidence_overlap": f"{overlap}/{len(graded)}",
-        "no_evidence_flagged_for_review": f"{safety_ok}/{len(safety_cases)}",
-        "gate_failures": len(gate_failures),
+        "mode": "offline" if args.offline else "full",
         "generator": f"respond:{settings.generation_provider}",
+        "cases_run": total,
+        "skipped_requires_model": len(skipped),
+        "known_gaps": known_gaps,
+        "graded": len(graded),
+        "outcome_accuracy": f"{outcome_acc}/{len(graded)} (excl. known gaps)",
+        "outcome_accuracy_pct": round(accuracy * 100, 1),
+        "accuracy_floor_pct": round(args.floor * 100, 1),
+        "accuracy_ok": accuracy_ok,
+        "evidence_overlap": f"{overlap}/{len(graded)}",
+        "gate_failures": len(gate_failures),
+        "result": "pass" if passed else "fail",
     }
     print("\n" + json.dumps(summary, indent=2))
+    # Single-line, machine-readable verdict the CI workflow can grep/parse.
+    print(
+        "EVAL_RESULT_JSON=" + json.dumps(
+            {
+                "result": summary["result"],
+                "gate_failures": len(gate_failures),
+                "outcome_accuracy_pct": summary["outcome_accuracy_pct"],
+                "accuracy_floor_pct": summary["accuracy_floor_pct"],
+                "accuracy_ok": accuracy_ok,
+            }
+        )
+    )
+
     if gate_failures:
         print(f"\nGATE FAILURES: {len(gate_failures)} — see rows marked FAIL above.")
-        return 1
-    print("\nAll safety gates passed.")
-    return 0
+    if not accuracy_ok:
+        print(
+            f"ACCURACY BELOW FLOOR: {accuracy * 100:.1f}% < {args.floor * 100:.0f}% "
+            f"({outcome_acc}/{len(graded)} graded cases matched)."
+        )
+    if passed:
+        print("\nPASS: all safety gates passed and outcome accuracy is at/above the floor.")
+        return 0
+    return 1
 
 
 if __name__ == "__main__":

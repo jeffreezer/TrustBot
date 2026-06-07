@@ -64,6 +64,9 @@ cases:
     expected_outcome: attested
     expected_evidence: [Data_Classification_and_Handling_Policy, C1.1]
     gates: [four_tiers_and_policy]
+    # Needs semantic retrieval to rank the policy's tiers section first — the hash embedder
+    # (offline CI) is semantically blind, so this is graded against the real model only.
+    requires_model: true
     notes: >
       Must list the four tiers — Public, Internal, Confidential, Restricted — from the
       Data Classification & Handling Policy (§3). Regression guard for structure-aware
@@ -118,6 +121,9 @@ cases:
     expected_outcome: attested
     expected_evidence: [Pentest_Executive_Summary]
     gates: [renders_remediation]
+    # Needs semantic retrieval of the pentest evidence as the affirmative basis; the offline
+    # hash embedder can't surface it, so this is graded against the real model only.
+    requires_model: true
     notes: >
       Document-request: affirm and attach the artifact, and render the remediation register
       (H-01 in_progress, target 2026-05-15). The open finding HAS a target date, so it
@@ -153,6 +159,9 @@ cases:
     expected_outcome: negative
     expected_evidence: []
     gates: [needs_input_safety, no_overclaim]
+    # The honest "no" needs the SOC 2 evidence retrieved to form the contrastive negative;
+    # offline the hash embedder can't, so it safely needs_inputs instead (graded live).
+    requires_model: true
     notes: >
       Honest "No" — only SOC 2 evidence exists; must not claim SOC 1, and the answer is
       flagged for review (no_overclaim still asserts no SOC 1 assertion slips through).
@@ -192,6 +201,9 @@ cases:
     expected_evidence: [HR1.1, Human Resources Security Policy]
     expected_document: "human resources security"
     gates: [attaches_named_document]
+    # The whole point is the model reformulating "background checks" -> "personnel security";
+    # the offline fake/hash can't reformulate, so this is graded against the real model only.
+    requires_model: true
     notes: >
       Reformulation: "background checks" -> "personnel security / pre-employment screening /
       HR security". Must affirm (attested/qualified) citing HR1.1 + the HR Security Policy,
@@ -220,6 +232,10 @@ cases:
     expected_outcome: needs_input
     expected_evidence: []
     gates: [needs_input_safety]
+    # Correctly finding NOTHING needs semantic retrieval; the hash embedder can surface a
+    # lexically-adjacent chunk ("cryptography") and spuriously affirm, so this is graded live.
+    # (needs_input_safety is still gated offline via NW-040 / NW-041.)
+    requires_model: true
     notes: >
       Neither topic exists in the corpus. The loop may search/reformulate, but with no
       supporting evidence it must still route to needs_input — never fabricate.

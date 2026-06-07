@@ -10,7 +10,16 @@ from functools import lru_cache
 
 from ..config import settings
 from .base import EmbeddingProvider, ProviderError
-from .generation_base import DraftRequest, GenerationProvider, GroundingDoc
+from .generation_base import (
+    AgentRound,
+    AssistantTurn,
+    DraftRequest,
+    GenerationProvider,
+    GroundingDoc,
+    ToolCall,
+    ToolResultMsg,
+    ToolSpec,
+)
 from .rerank_base import RerankProvider
 
 
@@ -93,6 +102,11 @@ __all__ = [
     "GenerationProvider",
     "DraftRequest",
     "GroundingDoc",
+    "ToolSpec",
+    "ToolCall",
+    "ToolResultMsg",
+    "AssistantTurn",
+    "AgentRound",
     "ProviderError",
     "get_embedding_provider",
     "get_rerank_provider",

@@ -15,7 +15,7 @@ runs deterministic checks — the model is never trusted to self-police.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -38,6 +38,59 @@ class DraftRequest:
     grounding: tuple[GroundingDoc, ...]
 
 
+# --- Adaptive retrieval loop (Phase 6) -------------------------------------
+# Provider-neutral tool-calling types. The loop control + tool execution live in the
+# answer path (server-side, org-scoped, audited); a provider only translates these to/from
+# its native tool API. Tool RESULTS are untrusted data fed back as tool-result messages —
+# never system instructions (06 §7).
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """A read-only tool offered to the agent (name + JSON-schema for its arguments)."""
+
+    name: str
+    description: str
+    input_schema: dict
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    """A model-requested tool invocation. ``arguments`` never includes org_id — the server
+    enforces tenancy from the request context."""
+
+    id: str
+    name: str
+    arguments: dict
+
+
+@dataclass(frozen=True)
+class ToolResultMsg:
+    """The server's reply to one tool call, fed back to the model as data."""
+
+    call_id: str
+    name: str
+    content: str  # JSON string the model sees
+
+
+@dataclass(frozen=True)
+class AssistantTurn:
+    """One model turn: retrieval tool call(s), OR the final structured draft (the model
+    emitted ``emit_answer_draft``). ``text`` preserves any prose for transcript fidelity."""
+
+    tool_calls: tuple[ToolCall, ...] = ()
+    draft_json: str | None = None
+    text: str = ""
+
+
+@dataclass(frozen=True)
+class AgentRound:
+    """A completed loop round: the model's turn + the tool results returned to it."""
+
+    assistant: AssistantTurn
+    results: tuple[ToolResultMsg, ...] = field(default_factory=tuple)
+
+
 class GenerationProvider(ABC):
     """Drafts a structured answer from a question + retrieved grounding."""
 
@@ -52,3 +105,29 @@ class GenerationProvider(ABC):
         grounding as data only. The returned string is parsed and validated by the
         caller; an implementation never decides confidence or human-review state.
         """
+
+    # --- Adaptive retrieval loop (Phase 6); optional per provider -----------
+
+    def supports_tools(self) -> bool:
+        """Whether this provider can run the tool-calling loop. Providers that can't fall
+        back to the one-shot ``draft`` path (the loop is an upgrade, never a requirement)."""
+        return False
+
+    def agent_turn(
+        self,
+        *,
+        system: str,
+        question: str,
+        history: tuple[AgentRound, ...],
+        tools: tuple[ToolSpec, ...],
+        force_final: bool,
+    ) -> AssistantTurn:
+        """One turn of the adaptive loop: given the system prompt (trusted), the question,
+        and the prior rounds (assistant tool calls + their results, as DATA), return either
+        retrieval tool calls or the final ``emit_answer_draft`` (in ``draft_json``).
+
+        ``force_final=True`` requires the provider to emit the draft now (final budgeted
+        turn). Implementations MUST keep ``system`` trusted and everything in ``history``
+        as data — tool results never alter the instructions.
+        """
+        raise NotImplementedError(f"{self.name} does not support the tool-calling loop")

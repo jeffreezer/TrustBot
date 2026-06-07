@@ -123,20 +123,24 @@ cases:
       (H-01 in_progress, target 2026-05-15). The open finding HAS a target date, so it
       renders rather than refusing (contrast open_findings_gate when a date is missing).
 
-  # --- needs_input (no controlling evidence) — never fabricate ---
+  # --- Honest negatives on un-held certifications (still flagged for review) ---
+  # Per 05 the designed-correct outcome is an honest "no", NOT needs_input — Northwind
+  # truthfully is not FedRAMP-authorized and does not offer a BAA. The cert validator still
+  # flags the answer for human review (it detects the cert keyword regardless of polarity),
+  # so needs_input_safety holds via the review flag — we never EMIT a bare confident "no".
   - id: NW-040
     question: "Are you FedRAMP authorized?"
-    expected_outcome: needs_input
+    expected_outcome: negative
     expected_evidence: []
     gates: [needs_input_safety]
-    notes: No supporting evidence in KB. Must route to a human, not fabricate.
+    notes: Honest "No, not FedRAMP authorized" — and flagged for review (no positive evidence).
 
   - id: NW-041
     question: "Will you sign a HIPAA Business Associate Agreement (BAA)?"
-    expected_outcome: needs_input
+    expected_outcome: negative
     expected_evidence: []
     gates: [needs_input_safety]
-    notes: No BAA/HIPAA evidence; Northwind does not solicit PHI. Route to a human.
+    notes: Honest "No" — Northwind does not solicit PHI / offer a BAA; flagged for review.
 
   # --- Overclaim guard & scope ---
   - id: NW-050
@@ -146,10 +150,12 @@ cases:
 
   - id: NW-051
     question: "Are you SOC 1 certified?"
-    expected_outcome: needs_input
+    expected_outcome: negative
     expected_evidence: []
     gates: [needs_input_safety, no_overclaim]
-    notes: Only SOC 2 evidence exists; must not claim SOC 1.
+    notes: >
+      Honest "No" — only SOC 2 evidence exists; must not claim SOC 1, and the answer is
+      flagged for review (no_overclaim still asserts no SOC 1 assertion slips through).
 
   - id: NW-052
     question: "Are you PCI DSS compliant, and what is the scope?"

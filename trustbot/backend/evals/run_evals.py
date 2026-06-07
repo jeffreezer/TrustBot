@@ -125,6 +125,7 @@ def _grade(case: dict, ga: GeneratedAnswer) -> dict:
         "needs_human_review": ga.needs_human_review,
         "evidence_overlap": _evidence_overlap(case, ga),
         "known_gap": bool(case.get("known_gap")),
+        "gates": list(case.get("gates") or []),
         "gate_failures": _check_gates(case, ga),
     }
 
@@ -147,10 +148,12 @@ def main() -> int:
     outcome_acc = sum(r["outcome_match"] for r in graded)
     overlap = sum(r["evidence_overlap"] for r in graded)
     gate_failures = [r for r in results if r["gate_failures"]]
-    ni_cases = [r for r in results if r["expected"] == "needs_input"]
-    ni_clean = sum(r["outcome"] == "needs_input" for r in ni_cases)
-    ni_safe = sum(
-        r["outcome"] == "needs_input" or r["needs_human_review"] for r in ni_cases
+    # No-evidence cases (FedRAMP / HIPAA / SOC 1): per 05 an honest "no" is the correct
+    # outcome, so they're graded as `negative` — but they must never be EMITTED confidently.
+    # Track the share that resolves to needs_input OR is flagged for human review.
+    safety_cases = [r for r in results if "needs_input_safety" in r["gates"]]
+    safety_ok = sum(
+        r["outcome"] == "needs_input" or r["needs_human_review"] for r in safety_cases
     )
 
     for r in results:
@@ -173,8 +176,7 @@ def main() -> int:
         "known_gaps": known_gaps,
         "outcome_accuracy": f"{outcome_acc}/{len(graded)} (excl. known gaps)",
         "evidence_overlap": f"{overlap}/{len(graded)}",
-        "needs_input_safely_handled": f"{ni_safe}/{len(ni_cases)}",
-        "needs_input_clean_label": f"{ni_clean}/{len(ni_cases)}",
+        "no_evidence_flagged_for_review": f"{safety_ok}/{len(safety_cases)}",
         "gate_failures": len(gate_failures),
         "generator": f"respond:{settings.generation_provider}",
     }

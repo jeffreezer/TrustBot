@@ -157,14 +157,16 @@ def _cite_doc(ev: Evidence) -> CitedEvidence:
     )
 
 
-def test_generic_request_attaches_the_cited_governing_document(pg_session):
-    # Background-checks shape: not a named attestation kind, but the answer cites a SPECIFIC
-    # policy as its basis → attach THAT policy (not the picker, not an unrelated doc).
+def test_generic_request_recommends_cited_doc_but_does_not_attach(pg_session, monkeypatch):
+    # Background-checks shape: not a named attestation kind. Providing a document is a human
+    # disclosure decision, so NEVER auto-attach — surface the picker with the cited governing
+    # policy pre-selected (recommended, sorted first) for a one-click confirm (05 §8.5).
     org = _org(pg_session, "Cited Doc")
     hr = _evidence(org, title="HR Security Policy", kind="policy")
     other = _evidence(org, title="Acceptable Use Policy", kind="policy")
     pg_session.add_all([hr, other])
     pg_session.flush()
+    monkeypatch.setattr(gen, "retrieve", lambda *a, **k: [])
 
     res = _resolve_documents_and_findings(
         pg_session,
@@ -173,12 +175,17 @@ def test_generic_request_attaches_the_cited_governing_document(pg_session):
         _doc_request(),
         cited=[_cite_doc(hr)],
     )
-    assert [p.title for p in res.provided] == ["HR Security Policy"]
-    assert res.selection_required is False  # specific basis → attach, don't defer
+    assert res.provided == []  # nothing auto-attached — the human confirms
+    assert res.selection_required is True
+    recommended = [c.title for c in res.candidates if c.recommended]
+    assert recommended == ["HR Security Policy"]  # cited doc pre-selected
+    assert res.candidates[0].title == "HR Security Policy"  # recommended sorts first
+    assert "Acceptable Use Policy" in {c.title for c in res.candidates}  # others selectable
 
 
-def test_generic_request_without_document_basis_defers(pg_session, monkeypatch):
-    # No cited document (e.g. answer rests only on a control) → genuinely ambiguous → picker.
+def test_generic_request_without_document_basis_opens_empty_picker(pg_session, monkeypatch):
+    # No cited document (answer rests only on a control, or none) → picker with nothing
+    # pre-selected.
     org = _corpus(pg_session)
     monkeypatch.setattr(gen, "retrieve", lambda *a, **k: [])
     res = _resolve_documents_and_findings(
@@ -190,6 +197,7 @@ def test_generic_request_without_document_basis_defers(pg_session, monkeypatch):
     )
     assert res.provided == []
     assert res.selection_required is True
+    assert all(not c.recommended for c in res.candidates)  # nothing pre-selected
 
 
 def test_candidates_are_relevance_ranked(pg_session, monkeypatch):

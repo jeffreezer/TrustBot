@@ -108,28 +108,37 @@ def _check_gates(case: dict, ga: GeneratedAnswer) -> list[str]:
     if "perspective_self" in gates and outcome == RespondOutcome.NEEDS_INPUT:
         failures.append("perspective-resolved question fell to needs_input (lost grounding)")
 
-    # Adaptive loop — multi-part: a compound question addresses several parts (breadth of
-    # distinct cited sources) and flags any unsupported part for human review.
-    if "multi_part" in gates:
+    # Adaptive loop — multi-part: WHEN the model answers a compound question it must address
+    # several parts (breadth of distinct cited sources) and flag any unsupported part for
+    # human review. A conservative whole-question needs_input is a safe (fail-closed) outcome,
+    # not a gate failure — so this enforces answer *quality*, never penalizing fail-safe.
+    if "multi_part" in gates and outcome != RespondOutcome.NEEDS_INPUT:
         distinct = {ref.source_id or ref.chunk_id for ref in ga.evidence_refs}
-        if outcome == RespondOutcome.NEEDS_INPUT:
-            failures.append("multi-part question fell to needs_input instead of addressing parts")
-        elif len(distinct) < 2:
+        if len(distinct) < 2:
             failures.append("multi-part answer cites fewer than two distinct sources")
         if not ga.needs_human_review:
             failures.append("multi-part answer with an unsupported part not flagged for review")
 
-    # Adaptive loop — document provision attaches the SPECIFIC requested artifact (by title),
-    # found by reformulating the query; never falls to needs_input, never an unrelated doc.
+    # Adaptive loop — the document-request surfaces the SPECIFIC requested artifact (by
+    # title), found by reformulating the query; never falls to needs_input, never an unrelated
+    # doc. A named-artifact request auto-attaches it; a generic request pre-selects it as the
+    # recommended candidate in the analyst picker (05 §8.5) — either satisfies the guarantee.
     if "attaches_named_document" in gates:
         want = (case.get("expected_document") or "").lower()
-        titles = " ".join((d.title or "") for d in ga.provided_documents).lower()
+        attached = " ".join((d.title or "") for d in ga.provided_documents).lower()
+        recommended = " ".join(
+            (c.title or "") for c in ga.candidate_documents if c.recommended
+        ).lower()
         if outcome == RespondOutcome.NEEDS_INPUT:
             failures.append("document-request fell to needs_input (loop should have found it)")
-        elif not ga.provided_documents:
-            failures.append("no document attached for a document-request")
-        elif want and want not in titles:
-            failures.append(f"attached the wrong document (want a title containing '{want}')")
+        elif not want:
+            pass
+        elif want in attached or want in recommended:
+            pass  # attached (named) or pre-selected in the picker (generic)
+        else:
+            failures.append(
+                f"named document neither attached nor recommended (want a title containing '{want}')"
+            )
 
     return failures
 

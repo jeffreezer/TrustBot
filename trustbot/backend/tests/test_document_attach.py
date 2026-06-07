@@ -91,6 +91,22 @@ def test_attach_selected_document_resolves_clears_flag_and_audits(pg_session):
     assert audit.payload["document_ids"] == [str(doc.id)]
 
 
+def test_attach_swaps_to_a_different_shareable_document(pg_session):
+    # The analyst deselects the recommended doc and confirms a different shareable artifact.
+    org = _org(pg_session)
+    ans = _answer_awaiting_selection(pg_session, org)
+    recommended = _evidence(org, title="HR Security Policy", kind="policy")
+    chosen = _evidence(org, title="Information Security Policy", kind="policy")
+    pg_session.add_all([recommended, chosen])
+    pg_session.flush()
+
+    updated = attach_documents(
+        pg_session, org=org, answer_id=ans.id, document_ids=[chosen.id]
+    )
+    assert [d["title"] for d in updated.provided_documents] == ["Information Security Policy"]
+    assert updated.document_selection_required is False
+
+
 def test_attach_populates_remediation_when_doc_has_findings(pg_session):
     from app.db.models import Finding
 

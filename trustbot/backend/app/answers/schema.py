@@ -83,14 +83,16 @@ class ProvidedDocument(BaseModel):
 
 
 class CandidateDocument(BaseModel):
-    """A selectable document offered to the analyst for a generic document-request (05 §8):
+    """A selectable document offered to the analyst for a generic document-request (05 §8.5):
     org-scoped, customer_shareable evidence, relevance-ranked, labeled by kind + title.
     Providing a document is a disclosure decision — the system surfaces candidates and the
-    human chooses; nothing is attached automatically."""
+    human chooses; nothing is attached automatically. ``recommended`` marks the governing
+    document the answer cited, pre-selected so the common case is a one-click confirm."""
 
     document_id: str
     title: str | None = None
     document_kind: str | None = None
+    recommended: bool = False
 
 
 class AnswerDraft(BaseModel):

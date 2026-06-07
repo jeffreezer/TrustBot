@@ -271,12 +271,17 @@ def _findings_for(
 
 
 def _candidate_documents(
-    session: Session, org_id: uuid.UUID, question: str
+    session: Session,
+    org_id: uuid.UUID,
+    question: str,
+    recommended_ids: frozenset[str] = frozenset(),
 ) -> list[CandidateDocument]:
     """The org's customer_shareable evidence documents, relevance-ranked to the question for
-    the analyst's picker (05 §8). Strictly org-scoped + shareable; documents only (collapsed
+    the analyst's picker (05 §8.5). Strictly org-scoped + shareable; documents only (collapsed
     from chunks). Ranking reuses the existing hybrid retrieval; documents it didn't surface
-    are still listed (less relevant) so any shareable doc is selectable."""
+    are still listed (less relevant) so any shareable doc is selectable. Documents in
+    ``recommended_ids`` (the governing doc the answer cited) are flagged and sorted first so
+    the common case is a one-click confirm."""
     # Every Evidence row is a shareable document candidate (attestations, policies, etc.).
     universe = list(
         session.scalars(
@@ -299,10 +304,16 @@ def _candidate_documents(
         sid = str(rc.source_id) if rc.source_id else None
         if sid and sid not in rank:
             rank[sid] = i
-    universe.sort(key=lambda d: (rank.get(str(d.id), 10**6), d.title or ""))
+    # Recommended first, then by relevance, then title.
+    universe.sort(
+        key=lambda d: (str(d.id) not in recommended_ids, rank.get(str(d.id), 10**6), d.title or "")
+    )
     return [
         CandidateDocument(
-            document_id=str(d.id), title=d.title, document_kind=d.document_kind
+            document_id=str(d.id),
+            title=d.title,
+            document_kind=d.document_kind,
+            recommended=str(d.id) in recommended_ids,
         )
         for d in universe
     ]
@@ -347,39 +358,32 @@ def _resolve_documents_and_findings(
             missing_kinds=missing,
         )
 
-    # No named attestation kind. Attach the governing document(s) the answer actually CITES
-    # as its basis — the system resolves chunk→document (the model named no document id), so
-    # a topical request like "...background checks? attach your relevant policy" attaches the
-    # HR Security Policy it cited, not an unrelated doc. If the answer has no specific document
-    # basis (cites only controls, a prior answer, or nothing), the request is genuinely
-    # ambiguous → defer to the analyst picker (05 §8).
-    doc_ids: set[uuid.UUID] = set()
+    # No named attestation kind. Providing a document is a human disclosure decision, so NEVER
+    # auto-attach (05 §8.5): always surface the analyst picker. The governing document the
+    # answer cited (system resolves chunk→document; the model named no id) is pre-selected as
+    # the recommended choice — the common case is a one-click confirm, but the analyst can
+    # deselect it or pick other shareable artifacts. Nothing attaches until they confirm.
+    cited_doc_ids: set[uuid.UUID] = set()
     for c in cited:
         if c.source_id and c.source_type in _DOCUMENT_SOURCE_TYPES:
             try:
-                doc_ids.add(uuid.UUID(c.source_id))
+                cited_doc_ids.add(uuid.UUID(c.source_id))
             except (ValueError, TypeError):
                 continue
-    if doc_ids:
-        docs = list(
-            session.scalars(
-                select(Evidence).where(
-                    Evidence.org_id == org_id,
-                    Evidence.id.in_(doc_ids),
-                    Evidence.customer_shareable.is_(True),
-                )
-            ).all()
-        )
-        if docs:
-            docs.sort(key=lambda d: (d.document_kind or "", d.title or ""))
-            provided = [ProvidedDocument(document_id=str(d.id), title=d.title) for d in docs]
-            return _DocResolution(
-                provided=provided, findings=_findings_for(session, org_id, docs)
+    recommended: frozenset[str] = frozenset()
+    if cited_doc_ids:
+        # Only org-owned, customer_shareable cited docs are eligible to recommend.
+        rec_rows = session.scalars(
+            select(Evidence.id).where(
+                Evidence.org_id == org_id,
+                Evidence.id.in_(cited_doc_ids),
+                Evidence.customer_shareable.is_(True),
             )
-
+        ).all()
+        recommended = frozenset(str(i) for i in rec_rows)
     return _DocResolution(
         selection_required=True,
-        candidates=_candidate_documents(session, org_id, question),
+        candidates=_candidate_documents(session, org_id, question, recommended),
     )
 
 

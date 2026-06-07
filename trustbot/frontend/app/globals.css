@@ -391,6 +391,16 @@ a {
   border-radius: 4px;
   padding: 0 0.3rem;
 }
+.docPicker .recommended {
+  margin-left: 0.4rem;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: #34d399;
+  border: 1px solid rgba(52, 211, 153, 0.5);
+  border-radius: 4px;
+  padding: 0 0.3rem;
+}
 .providedDocs ul,
 .remediation ul {
   margin: 0.3rem 0 0;

@@ -66,6 +66,7 @@ export type CandidateDocument = {
   document_id: string;
   title: string | null;
   document_kind: string | null;
+  recommended: boolean;
 };
 
 export type Finding = {

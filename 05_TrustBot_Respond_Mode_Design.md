@@ -136,6 +136,13 @@ Stronger controls, layered on **in front of** the same endpoint when external-re
 
 Signed-URL signing itself is free (a local cryptographic operation). The only costs are ordinary object storage — at-rest (~pennies for small PDFs), egress on download (~$0.09/GB; negligible at these sizes), and request ops. **MinIO locally is free.** This feature has no always-on cost component (unlike Cloud SQL).
 
+### 8.5 Document selection (which artifact to attach)
+
+How the attached artifact(s) for a document-request question are chosen:
+
+- **Named artifact** (the question names SOC 2 / ISO / PCI / pentest): **kind-based auto-attach.** Select org-scoped, `customer_shareable` evidence whose `document_kind` matches the requested artifact(s), attaching all that apply. Never substitute a whitepaper for an attestation; a requested artifact absent from the corpus is flagged for human review, never substituted.
+- **Generic request** (no specific artifact named — e.g. "share relevant documentation," "attach your relevant policy"): **always surface an analyst picker** — providing a document is a human disclosure decision, so the system does not silently auto-attach. Present the org's `customer_shareable` evidence documents, relevance-ranked to the question (via the existing retrieval), each labeled by `document_kind` + title. **Pre-select the cited governing document** as the recommended choice (one-click confirm in the common case), but the analyst can deselect it and choose other shareable artifacts; if the answer has no cited governing document, the picker opens with nothing pre-selected. Nothing attaches until the analyst confirms; selection resolves **server-side** (a real shareable, org-owned record) and writes a `document.attach` audit entry.
+
 ---
 
 ## 9. Remediation Register Data Model

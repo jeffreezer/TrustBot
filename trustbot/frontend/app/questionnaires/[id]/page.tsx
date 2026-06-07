@@ -90,6 +90,12 @@ export default function Workspace() {
       const data = await api.getQuestion(questionId);
       setQd(data);
       setEditText(data.answer?.answer ?? "");
+      // Pre-select the recommended (cited) document so confirming is one click.
+      setPicked(
+        (data.answer?.candidate_documents ?? [])
+          .filter((c) => c.recommended)
+          .map((c) => c.document_id),
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load question");
     }
@@ -320,6 +326,9 @@ export default function Workspace() {
                                     <span className="kind">{c.document_kind}</span>
                                   )}{" "}
                                   {c.title || "Document"}
+                                  {c.recommended && (
+                                    <span className="recommended">recommended</span>
+                                  )}
                                 </label>
                               </li>
                             ))}
@@ -329,7 +338,7 @@ export default function Workspace() {
                             disabled={busy || picked.length === 0}
                             onClick={attachDocs}
                           >
-                            Attach selected
+                            Confirm attachment
                           </button>
                         </>
                       ) : (

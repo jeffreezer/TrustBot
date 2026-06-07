@@ -134,8 +134,8 @@ It's parameterized and idempotent. By default it deploys a **public, clickable d
 
 ## Roadmap
 
-This is Milestone 1. Phase 1 (data layer), Phase 2 (ingestion: parse → chunk → embed), Phase 3 (hybrid retrieval + reranking), Phase 4 (answer generation: the fixed retrieve-then-answer pipeline with composite confidence, structured output, and deterministic validators), **Phase 5 (review workspace + export + audit — the first demoable build, `v0.1`)**, and **Phase 5.5 (deploy to GCP — Cloud Run + Cloud SQL + GCS + Secret Manager)** are in place. Subsequent phases add the agentic retrieval loop (Phase 6), the full eval gate (Phase 7), and security hardening. See `../04_TrustBot_MVP_Build_Guide.md`.
+This is Milestone 1. Phase 1 (data layer), Phase 2 (ingestion: parse → chunk → embed), Phase 3 (hybrid retrieval + reranking), Phase 4 (answer generation: the fixed retrieve-then-answer pipeline with composite confidence, structured output, and deterministic validators), **Phase 5 (review workspace + export + audit — the first demoable build, `v0.1`)**, and **Phase 5.5 (deploy to GCP — Cloud Run + Cloud SQL + GCS + Secret Manager)** are in place. Subsequent phases add the agentic retrieval loop (Phase 6), the full eval gate (Phase 7), and security hardening. See `../docs/04_TrustBot_MVP_Build_Guide.md`.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](../LICENSE).

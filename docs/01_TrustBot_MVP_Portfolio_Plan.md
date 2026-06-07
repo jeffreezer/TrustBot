@@ -1,7 +1,7 @@
 # TrustBot — Portfolio MVP Plan (Milestone 1: Questionnaire Responder)
 
 > **Status:** Active build target. This is the *start here* document.
-> **Companion documents:** `02_TrustBot_Vendor_Review_Component.md` (Milestone 2, the inverse/buyer side) and `03_TrustBot_Full_Vision_Roadmap.md` (everything else, preserved). The original combined plan is retained as `trustbot_questionnaire_responder_project_plan.md`.
+> **Companion documents:** `02_TrustBot_Vendor_Review_Component.md` (Milestone 2, the inverse/buyer side) and `03_TrustBot_Full_Vision_Roadmap.md` (everything else, preserved).
 
 ---
 

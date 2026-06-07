@@ -1,7 +1,7 @@
 # TrustBot — Respond-Mode Design & Course Correction (Milestone 1)
 
 > **Status: FINALIZED design** (decisions agreed; no code yet). Course correction for the Milestone 1 Questionnaire Responder, which drifted into *reviewer* voice (surfacing auditor exceptions as answer verdicts; reading questionnaire pronouns from the buyer's side). This document defines the **respond-mode** posture the responder should have, the document-access security model, the authentication sequencing, and the contained set of changes to get there. It **supersedes** the answer-generation guidance in `04` where they conflict.
-> **Companion documents:** `01_TrustBot_MVP_Portfolio_Plan.md` (Milestone 1), `02_TrustBot_Vendor_Review_Component.md` (Milestone 2 / review mode), `03_TrustBot_Full_Vision_Roadmap.md`, `04_TrustBot_MVP_Build_Guide.md`, and `CLAUDE.md` (security + core principles, in force).
+> **Companion documents:** `01_TrustBot_MVP_Portfolio_Plan.md` (Milestone 1), `02_TrustBot_Vendor_Review_Component.md` (Milestone 2 / review mode), `03_TrustBot_Full_Vision_Roadmap.md`, `04_TrustBot_MVP_Build_Guide.md`, and `../CLAUDE.md` (security + core principles, in force).
 
 ---
 

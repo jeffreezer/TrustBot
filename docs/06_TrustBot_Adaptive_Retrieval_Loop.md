@@ -1,7 +1,7 @@
 # TrustBot — Adaptive Retrieval Loop (Phase 6 Design)
 
 > **Status: FINALIZED design** (decisions agreed; no code yet). Expands Phase 6 of `04_TrustBot_MVP_Build_Guide.md` ("Agentic upgrade") with the concrete design. The adaptive retrieval loop is the **single, bounded** piece of agentic behavior in TrustBot — deliberately *not* a multi-agent swarm. It is **shared infrastructure used by both postures**: respond mode (Milestone 1) and review mode (Milestone 2).
-> **Companion documents:** `04_TrustBot_MVP_Build_Guide.md` (Phase 6 stub), `05_TrustBot_Respond_Mode_Design.md` (respond posture), `02_TrustBot_Vendor_Review_Component.md` (review posture / Milestone 2), `CLAUDE.md` (security + core principles, in force).
+> **Companion documents:** `04_TrustBot_MVP_Build_Guide.md` (Phase 6 stub), `05_TrustBot_Respond_Mode_Design.md` (respond posture), `02_TrustBot_Vendor_Review_Component.md` (review posture / Milestone 2), `../CLAUDE.md` (security + core principles, in force).
 
 ---
 

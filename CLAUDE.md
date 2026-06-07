@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Operating guide for Claude Code in this repository. This file is loaded every session — keep its rules in force at all times. For full onboarding read `HANDOFF.md`; for the phase-by-phase plan read `04_TrustBot_MVP_Build_Guide.md`. Those are authoritative for scope.
+Operating guide for Claude Code in this repository. This file is loaded every session — keep its rules in force at all times. For the phase-by-phase plan read `docs/04_TrustBot_MVP_Build_Guide.md`; for the full set of design docs see `docs/`. Those are authoritative for scope.
 
 ## Project
 
@@ -51,8 +51,8 @@ trustbot/            # the code (Phase 0 scaffold runs today)
   backend/app/       # FastAPI: main.py, config.py, db/ (models + alembic), storage/ (+ ingestion, retrieval, answers, agent, providers as phases land)
   frontend/          # Next.js app
 seed/northwind_ai/   # synthetic demo company: profile, control_catalog.csv, evidence/, questionnaires/, README (answer key), eval_golden_set.yaml
-01..04_*.md          # planning docs + build guide
-HANDOFF.md           # start-here orientation
+docs/01..06_*.md     # planning docs, build guide, and finalized designs
+README.md  SECURITY.md  CLAUDE.md  LICENSE   # root-level project docs + license
 ```
 
 ## Run & verify

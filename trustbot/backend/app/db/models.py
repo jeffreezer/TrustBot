@@ -1,6 +1,6 @@
 """SQLAlchemy models for the TrustBot MVP.
 
-Design invariants (see 01_TrustBot_MVP_Portfolio_Plan.md §10 and the build guide):
+Design invariants (see docs/01_TrustBot_MVP_Portfolio_Plan.md §10 and the build guide):
 
 - Every table has a UUID primary key and ``created_at`` / ``updated_at``.
 - Every tenant-owned table carries ``org_id`` from day one, so the single-tenant

@@ -1,7 +1,7 @@
 # TrustBot — Full Vision & Roadmap (Everything Beyond the First Two Milestones)
 
 > **Status:** Aspirational / preserved scope. This document keeps the broader vision intact so nothing from the original plan is lost. It is **not** the immediate build target.
-> **Companion documents:** `01_TrustBot_MVP_Portfolio_Plan.md` (Milestone 1, build this first), `02_TrustBot_Vendor_Review_Component.md` (Milestone 2). The full original plan is retained verbatim as `trustbot_questionnaire_responder_project_plan.md`.
+> **Companion documents:** `01_TrustBot_MVP_Portfolio_Plan.md` (Milestone 1, build this first), `02_TrustBot_Vendor_Review_Component.md` (Milestone 2).
 
 ---
 

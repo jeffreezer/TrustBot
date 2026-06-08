@@ -60,6 +60,39 @@ in CI.
   links); storage keys hardened against path traversal.
 - **Crypto / transport:** vetted libraries only; TLS in transit, AES-256 at rest.
 
+## Security review
+
+An adversarial security audit was run across the codebase — tenancy/authorization, injection
+(SQL + prompt), secrets/logging, file handling/storage, the HTTP/API surface, the frontend,
+and dependencies.
+
+**Posture: strong — no Critical or High findings.** The audit confirmed the hard things are
+done right: `org_id` tenancy is structurally enforced on every query and route (cross-org → 404,
+no existence leak); no SQL injection (ORM + bound params; FTS via `plainto_tsquery`); no SSRF
+(outbound HTTP only to operator-configured model endpoints); storage keys are hardened against
+path traversal; secrets never reach logs, audit payloads, or error messages; and the React
+frontend has no XSS sinks (attacker-controlled evidence/injection text renders as escaped text).
+
+Two **Medium** findings were remediated:
+
+1. **Loop-path grounding neutralization.** The one-shot path neutralized model-facing grounding,
+   but the adaptive-loop tool results fed raw chunk text to the model. Both paths now route
+   through a single chokepoint (`agent_tools.to_model_text`) so injected directives are
+   neutralized everywhere the model sees evidence; the raw text is kept only for detection.
+   Guarded by a loop-path adversarial test in the CI gate.
+2. **CSV/formula injection on export.** Exported questionnaire cells (attacker-controlled
+   question text) now quote any leading formula trigger (`= + - @ \t \r`) so a spreadsheet
+   treats them as inert text. Guarded by CSV + XLSX export tests.
+
+Low-priority hardening in the same change: strict security response headers (CSP with
+`frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`,
+`X-Frame-Options`) on the API and web app; CORS narrowed from `*` to the methods/headers
+actually used; Next.js bumped to the latest patched 14.2.x.
+
+**Follow-ups (not in this change):** a hash-locked backend dependency file for supply-chain
+reproducibility, and rotation of any locally-held model API key (the owner's to do; it was
+never committed).
+
 ## Reporting
 
 This is a portfolio / proof-of-work project. For a real deployment, report vulnerabilities

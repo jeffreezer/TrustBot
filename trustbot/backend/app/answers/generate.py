@@ -46,7 +46,7 @@ from ..providers import (
 )
 from ..retrieval import RetrievalFilters, RetrievedChunk, retrieve
 from ..security.injection import has_substance
-from .agent_tools import TOOL_SPECS, audit_view, execute_tool
+from .agent_tools import TOOL_SPECS, audit_view, execute_tool, to_model_text
 from .confidence import band_for, compute_confidence
 from .prompts import (
     decompose_instructions,
@@ -132,21 +132,17 @@ def _grounding_from_retrieved(
                 fusion_score=rc.fusion_score,
             )
         )
-        # Phase 8 (neutralize): the model-facing grounding has injection directives redacted
-        # and obfuscation stripped, so a live instruction never reaches the model — even
+        # Phase 8 (neutralize): the model-facing grounding goes through the SAME chokepoint as
+        # the adaptive-loop tool results (agent_tools.to_model_text) — injection directives are
+        # redacted and obfuscation stripped, so a live instruction never reaches the model even
         # though it was already inert as fenced data. CitedEvidence keeps the RAW text so the
         # boundary screen can still detect + flag it for the reviewer.
-        model_text = (
-            neutralize(rc.chunk_text)
-            if settings.injection_screening_enabled
-            else rc.chunk_text
-        )
         docs.append(
             GroundingDoc(
                 ref=ref,
                 source_type=rc.source_type,
                 title=str(title),
-                text=model_text,
+                text=to_model_text(rc.chunk_text),
                 customer_shareable=shareable,
             )
         )

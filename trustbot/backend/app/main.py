@@ -53,11 +53,27 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="TrustBot API", version="0.1.0", lifespan=lifespan)
 
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    """Defense-in-depth response headers. This is a JSON + file-download API (never renders
+    untrusted HTML), so a strict CSP is safe: deny all resource loads and framing."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault(
+        "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'"
+    )
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    # Only the verbs/headers the API actually uses (no wildcards — and credentials stay off).
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
 
 # Phase 5 review workspace (intake, drafting, review actions, export).

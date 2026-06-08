@@ -19,9 +19,11 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..db.models import Finding, KnowledgeChunk, Organization
 from ..providers import ToolCall, ToolSpec
 from ..retrieval import RetrievalFilters, RetrievedChunk, retrieve
+from ..security.injection import neutralize
 from .schema import CitedEvidence
 
 SEARCH_EVIDENCE = "search_evidence"
@@ -145,13 +147,28 @@ def _cited_from_chunk_row(chunk: KnowledgeChunk) -> CitedEvidence:
     )
 
 
+def to_model_text(raw: str) -> str:
+    """THE single chokepoint for untrusted evidence text → the model (Phase 8 invariant).
+
+    Every path that shows retrieved content to the model — the one-shot grounding AND the
+    adaptive-loop tool results — MUST route a chunk's text through here. It neutralizes any
+    injected directive (redacts the carrying sentence, strips obfuscation) so a live
+    instruction never reaches the prompt, even though it was already inert as fenced data.
+    ``CitedEvidence.text`` keeps the RAW text so the boundary screen still detects + flags the
+    original; only this transformed view is ever model-facing. Gated on screening so an
+    operator can disable it, but on by default.
+    """
+    return neutralize(raw) if settings.injection_screening_enabled else raw
+
+
 def _model_view(c: CitedEvidence) -> dict:
     return {
         "ref": c.chunk_id,
         "source_type": c.source_type,
         "source_id": c.source_id,
         "title": c.title,
-        "text": c.text[:_SNIPPET_CHARS],
+        # Neutralized before truncation — the model never sees a live injected directive.
+        "text": to_model_text(c.text)[:_SNIPPET_CHARS],
     }
 
 
@@ -300,4 +317,5 @@ __all__ = [
     "GET_FINDINGS",
     "execute_tool",
     "audit_view",
+    "to_model_text",
 ]

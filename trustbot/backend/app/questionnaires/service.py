@@ -786,11 +786,25 @@ def _remediation_text(findings: list[dict]) -> str:
     return "; ".join(parts)
 
 
+# Spreadsheet formula-injection (CSV injection): a cell beginning with one of these is
+# interpreted as a live formula by Excel/Sheets. Exported question text is attacker-controlled
+# (uploaded questionnaire), so any such cell is prefixed with a single quote to render it inert.
+_FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value: object) -> str:
+    """Neutralize spreadsheet formula injection by quoting a leading formula trigger."""
+    s = "" if value is None else str(value)
+    if s and s[0] in _FORMULA_TRIGGERS:
+        return "'" + s
+    return s
+
+
 def rows_to_csv(rows: list[dict]) -> bytes:
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=EXPORT_COLUMNS, extrasaction="ignore")
     writer.writeheader()
-    writer.writerows(rows)
+    writer.writerows({k: _csv_safe(v) for k, v in row.items()} for row in rows)
     return buf.getvalue().encode("utf-8-sig")  # BOM so Excel opens UTF-8 cleanly
 
 
@@ -802,7 +816,7 @@ def rows_to_xlsx(rows: list[dict]) -> bytes:
     ws.title = "Answers"
     ws.append(EXPORT_COLUMNS)
     for row in rows:
-        ws.append([row.get(col, "") for col in EXPORT_COLUMNS])
+        ws.append([_csv_safe(row.get(col, "")) for col in EXPORT_COLUMNS])
     out = io.BytesIO()
     wb.save(out)
     return out.getvalue()

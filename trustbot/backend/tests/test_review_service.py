@@ -84,3 +84,33 @@ def test_export_tolerates_missing_keys():
     # A row missing optional keys must not blow up serialization.
     body = rows_to_csv([{"question": "Only a question?"}]).decode("utf-8-sig")
     assert "Only a question?" in body
+
+
+# --- CSV / formula injection guard (audit F2) -------------------------------
+
+_FORMULA_QUESTION = "=cmd|'/c calc'!A1"
+
+
+def test_csv_export_neutralizes_formula_injection():
+    # Attacker-controlled question text starting with '=' must export as inert text (leading ').
+    body = rows_to_csv([{"question": _FORMULA_QUESTION, "answer": "+SUM(A1:A9)"}]).decode("utf-8-sig")
+    # The cell value is quoted so a spreadsheet treats it as text, not a live formula.
+    assert "'=cmd" in body
+    assert "'+SUM" in body
+    # A bare (unquoted) leading '=' formula must NOT appear.
+    assert "\n=cmd" not in body and ",=cmd" not in body
+
+
+def test_xlsx_export_neutralizes_formula_injection():
+    blob = rows_to_xlsx([{"question": _FORMULA_QUESTION, "short_answer": "@WEBSERVICE(...)"}])
+    ws = openpyxl.load_workbook(io.BytesIO(blob)).active
+    q_col = EXPORT_COLUMNS.index("question") + 1  # 1-based; row 2 is the first data row
+    sa_col = EXPORT_COLUMNS.index("short_answer") + 1
+    assert ws.cell(row=2, column=q_col).value == "'" + _FORMULA_QUESTION
+    assert ws.cell(row=2, column=sa_col).value == "'@WEBSERVICE(...)"
+
+
+def test_export_leaves_benign_values_unmodified():
+    body = rows_to_csv([{"question": "Do you encrypt at rest?", "confidence": "high"}]).decode("utf-8-sig")
+    assert "Do you encrypt at rest?" in body
+    assert "'Do you" not in body  # no spurious quoting of safe text

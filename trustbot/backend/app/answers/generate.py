@@ -59,6 +59,7 @@ from .schema import (
     AnswerDraft,
     CandidateDocument,
     CitedEvidence,
+    Claim,
     ConfidenceBand,
     EvidenceRef,
     GeneratedAnswer,
@@ -70,8 +71,11 @@ from .validate import (
     CONTROLLING_SOURCE_TYPES,
     FindingStatus,
     acceptable_basis_gate,
+    certification_claims,
+    derive_cert_outcome,
     open_findings_gate,
     run_review_checks,
+    validate_certification_claims,
 )
 
 # evidence_type → certification the org can therefore claim (attestation records).
@@ -430,6 +434,21 @@ def _normalize_ref(ref: str) -> str:
     return r.strip().strip("[](){}").strip()
 
 
+def _resolve_claims(
+    claims: list[Claim], by_ref: dict[str, CitedEvidence]
+) -> list[Claim]:
+    """Resolve each claim's ``basis`` server-side (07 §8): keep only refs that resolve to a
+    real chunk in the org-scoped grounding pool (``by_ref``); drop unresolvable / cross-org
+    refs as fabrication. The model *names* basis refs; the system decides which are real —
+    the same discipline already applied to document and approved-answer refs. Returns new
+    Claim objects (the inputs are left untouched)."""
+    resolved: list[Claim] = []
+    for c in claims:
+        basis = [r for r in (_normalize_ref(b) for b in c.basis) if r in by_ref]
+        resolved.append(c.model_copy(update={"basis": basis}))
+    return resolved
+
+
 # --- adaptive retrieval loop (Phase 6) -------------------------------------
 
 def _join_reason(existing: str | None, addition: str) -> str:
@@ -731,6 +750,26 @@ def _answer_one(
     by_ref = {c.chunk_id: c for c in cited_all}
     cited = [by_ref[r] for r in draft.evidence_refs if r in by_ref]
 
+    # Phase 1 (claim/attestation, 07 §3): resolve declared claim basis server-side against the
+    # org-scoped grounding pool (fabricated / cross-org refs dropped), then DERIVE the
+    # certification-question outcome from the declared claim status — polarity-first, so a
+    # denial can never be re-read as a "yes" (07 §3.2). Non-certification questions keep their
+    # prose-derived outcome (Phase 1 drives only certifications from claims).
+    available_certs = _available_certs(session, org.id)
+    claims = _resolve_claims(draft.claims, by_ref)
+    cert_claims = certification_claims(claims)
+    if cert_claims:
+        derived = derive_cert_outcome(cert_claims, available_certs)
+        if derived == RespondOutcome.NEEDS_INPUT:
+            # An affirmed cert with no held attestation (overclaim) or an unsubstantiated
+            # cert — fail closed rather than emit it, and surface the structural reason.
+            reason = "; ".join(
+                validate_certification_claims(cert_claims, available_certs)
+            ) or "certification could not be substantiated from a held attestation; a human must verify."
+            return _fail(reason)
+        if derived is not None:
+            draft.outcome = derived
+
     # Downgrade gate 1 — anti-fabrication: an affirmative must cite an acceptable basis
     # (policy/control/attestation OR a prior approved answer), else → needs_input (05).
     gate = acceptable_basis_gate(draft, cited)
@@ -749,7 +788,14 @@ def _answer_one(
         return _fail(
             "affirmative basis (prior approved answer) did not resolve to an approved record"
         )
-    reused_only = is_affirmative and bool(reused) and not has_controlling
+    # Principle 7: a reused approved answer is a re-validated *candidate*, never an auto-bypass —
+    # regardless of polarity. A drafted answer (affirmative OR an honest negative) that rests
+    # SOLELY on reused approvals, with no controlling owned control/policy/attestation, is
+    # flagged for human re-confirmation (a grounded negative cited to a real control — e.g.
+    # FedRAMP→CMP-04 — is NOT reused-only, so it stays clean).
+    reused_only = (
+        draft.outcome in RESPOND_DRAFTED and bool(reused) and not has_controlling
+    )
 
     # Resolve a document-request (named → auto-attach the attestation; generic → defer to a
     # human + surface candidates).
@@ -771,7 +817,8 @@ def _answer_one(
         draft,
         cited,
         grounding_refs=grounding_refs,
-        available_certs=_available_certs(session, org.id),
+        claims=claims,
+        available_certs=available_certs,
         customer_facing=True,
     )
     flagged_cited = injection_refs & {c.chunk_id for c in cited}
@@ -839,6 +886,7 @@ def _answer_one(
         claim=draft.claim.strip(),
         scope=draft.scope.strip(),
         evidence_refs=evidence_refs,
+        claims=claims,
         requires_document=draft.requires_document or bool(provided_docs),
         provided_documents=provided_docs,
         document_selection_required=docs.selection_required,
@@ -967,6 +1015,17 @@ def _recompose(
                 seen_refs.add(r.chunk_id)
                 evidence_refs.append(r)
 
+    # Union per-part claims (deduped by subject+type) so a compound answer's cert claims
+    # (e.g. one part asks about FedRAMP) survive recomposition for the audit/structure.
+    claims: list[Claim] = []
+    seen_claims: set[tuple[str, str]] = set()
+    for p in parts:
+        for cl in p.claims:
+            key = (cl.claim_type.value, cl.subject.strip().lower())
+            if key not in seen_claims:
+                seen_claims.add(key)
+                claims.append(cl)
+
     # Aggregate document-provision across parts.
     provided: list[ProvidedDocument] = []
     candidates: list[CandidateDocument] = []
@@ -1028,6 +1087,7 @@ def _recompose(
         claim="",
         scope="",
         evidence_refs=evidence_refs,
+        claims=claims,
         requires_document=requires_document or bool(provided),
         provided_documents=provided,
         document_selection_required=selection_required,
@@ -1093,6 +1153,7 @@ def persist_answer(
         claim=ga.claim or None,
         scope=ga.scope or None,
         evidence_refs=[ref.model_dump() for ref in ga.evidence_refs],
+        claims=[c.model_dump(mode="json") for c in ga.claims],
         requires_document=ga.requires_document,
         provided_documents=[d.model_dump() for d in ga.provided_documents],
         document_selection_required=ga.document_selection_required,
@@ -1126,6 +1187,7 @@ def persist_answer(
                 "confidence": ga.confidence,
                 "needs_human_review": ga.needs_human_review,
                 "evidence_count": len(ga.evidence_refs),
+                "claim_count": len(ga.claims),
                 "requires_document": ga.requires_document,
                 "document_selection_required": ga.document_selection_required,
                 "remediation_required": ga.remediation_required,

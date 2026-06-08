@@ -152,6 +152,57 @@ def test_injection_in_cited_chunk_is_flagged(monkeypatch):
     assert "injection" in (ga.review_reason or "").lower()
 
 
+def test_fedramp_denial_is_clean_grounded_negative(monkeypatch):
+    # 07 Phase 1 (claim/attestation): a grounded "No, not FedRAMP authorized" cited to the
+    # compliance-posture control is a CLEAN negative — derived from a denied certification
+    # claim, it does not trip the cert overclaim validator and carries no false
+    # "certification claimed" banner. This is the FedRAMP false-positive, fixed structurally.
+    cmp04 = _chunk(
+        "CMP-04 FedRAMP authorization status. Northwind AI is not FedRAMP authorized and does "
+        "not hold a FedRAMP authorization; FedRAMP is out of scope for the current offering.",
+        source_type="control",
+        title="FedRAMP authorization status",
+    )
+    _patch(monkeypatch, [cmp04])  # available_certs defaults to empty — FedRAMP is not held
+    ga = _run("Are you FedRAMP authorized?")
+
+    assert ga.outcome == RespondOutcome.NEGATIVE
+    # A FedRAMP certification claim was declared with status denied and its basis resolved
+    # server-side to the cited control chunk.
+    cert = [c for c in ga.claims if c.subject.lower() == "fedramp"]
+    assert cert and cert[0].status.value == "denied"
+    assert cert[0].basis == [str(cmp04.chunk_id)]
+    # No "certification claimed" overclaim banner, and the grounded negative is clean.
+    assert "certification" not in (ga.review_reason or "").lower()
+    assert ga.needs_human_review is False
+    assert ga.evidence_refs and ga.evidence_refs[0].source_type == "control"
+
+
+def test_fedramp_overclaim_without_attestation_is_not_emitted(monkeypatch):
+    # A genuine overclaim — a model affirming FedRAMP with no held attestation — must NOT be
+    # emitted as a confident "yes"; the cert outcome derivation fails it closed to needs_input.
+    cmp04 = _chunk(
+        "FedRAMP authorization status. Northwind AI is FedRAMP authorized.",
+        source_type="control",
+        title="FedRAMP authorization status",
+    )
+    _patch(monkeypatch, [cmp04])
+    ref = str(cmp04.chunk_id)
+    overclaimer = SimpleNamespace(
+        name="overclaimer",
+        draft=lambda req: (
+            '{"outcome": "attested", "short_answer": "Yes.", "claim": "We are FedRAMP.", '
+            '"answer": "Yes, FedRAMP authorized.", "evidence_refs": ["' + ref + '"], '
+            '"claims": [{"subject": "FedRAMP", "claim_type": "certification", '
+            '"status": "affirmed", "basis": ["' + ref + '"]}]}'
+        ),
+    )
+    ga = _run("Are you FedRAMP authorized?", generator=overclaimer)
+    assert ga.outcome == RespondOutcome.NEEDS_INPUT
+    assert ga.needs_human_review is True
+    assert "attestation" in (ga.review_reason or "").lower()
+
+
 def test_normalize_ref_strips_model_echoed_label():
     from app.answers.generate import _normalize_ref
 

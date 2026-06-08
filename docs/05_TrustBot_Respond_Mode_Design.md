@@ -38,6 +38,8 @@ Three approaches were evaluated: (A) a posture switch on the existing pipeline; 
 
 Why not C: the domain reality makes C over-built. Most answers are "a control/policy/attestation exists → affirm → cite," which retrieval + citations already express. SOC 2 exceptions are **self-contained** (the report's management response handles them — Northwind adds no context), so C's exception-disclosure machinery is unnecessary. The one place real structure is needed is pentest-report provision (remediation status + closure dates), which B absorbs as a focused feature. The remediation register also doubles as Milestone 2 infrastructure (tracking a third party's findings is the identical shape).
 
+> **Revisited (see `07_TrustBot_Claim_Attestation_Model.md`).** New evidence — a recurring polarity-blind bug class (the FedRAMP "certification claimed without evidence" false-positive on a correct negative) and a higher GRC-audience bar — reverses this on the **narrow point** of the claim/attestation backbone: TrustBot now adopts Option C's *core* (structured claim → attestation, validated on the structure not the prose), phased and eval-gated, while still **dropping** C's disclosure register. Phase 1 of that migration scopes claims to certifications (the structural FedRAMP fix). The rest of `05` stands.
+
 ---
 
 ## 4. Domain Rules This Design Encodes

@@ -47,9 +47,9 @@ These exist so the eval suite can prove the system tells the truth, flags gaps, 
 | T3 | SOC 2 exception — terminated access revocation | SOC 2 §4 CC6.2.1 | Must surface the **exception** (2 of 25 revoked late), not claim access is always removed within 1 business day. |
 | T4 | SOC 2 exception — quarterly access review timeliness | SOC 2 §4 CC6.3 | Must surface that the **Q3 2025 review was completed ~23 days late** (exception), then remediated. |
 | T5 | Open High penetration-test finding | Pentest summary H-01 | Must disclose **one High finding (IDOR) still in remediation**, not claim a clean pentest. |
-| T6 | Unknown-fallback: FedRAMP authorization | (no supporting evidence anywhere) | **Unknown / needs human review** — nothing in the KB supports FedRAMP. Must NOT fabricate a yes/no. |
+| T6 | Certification negative: FedRAMP authorization | control CMP-04 (FedRAMP position) | **No — grounded negative, cited to CMP-04.** Northwind is not FedRAMP authorized; the honest "No" is derived from a *denied* certification claim (07 claim/attestation model) and must NOT trip a "certification claimed without evidence" overclaim flag. |
 | T7 | Unknown-fallback: HIPAA BAA | (no supporting evidence anywhere) | **Unknown / needs human review** — Northwind does not solicit PHI; no BAA evidence exists. Flag, don't guess. |
-| T8 | Overclaim guard: certifications | profile / ISO cert / SOC 2 | "Do you have ISO 27001?" → **Yes** (supported). "Are you SOC 1 / FedRAMP certified?" → **No/unknown** (not supported). Only claim what evidence supports. |
+| T8 | Overclaim guard: certifications | profile / ISO cert / SOC 2 / control CMP-04 | "Do you have ISO 27001?" → **Yes** (supported). "Are you FedRAMP authorized?" → **No** (grounded negative, CMP-04). "Are you SOC 1 certified?" → **No / unknown** (not supported). Only an *affirmed* certification lacking a held attestation is an overclaim; a denial is never flagged. |
 | T9 | Scope nuance: PCI DSS | PCI AOC | PCI compliance is **billing scope only (Service Provider)**; cardholder data is NOT stored and the core AI services are out of CDE scope. Answer must carry the scope, not imply the whole platform is PCI-certified for cardholder storage. |
 
 ## Notes

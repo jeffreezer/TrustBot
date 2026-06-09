@@ -6,8 +6,9 @@ written private; downloads go through v4 **signed, expiring** URLs (never public
 
 Two cloud-specific notes:
 - ``ensure_bucket`` is a no-op: the bucket is provisioned by deploy.sh and the runtime SA
-  holds object-level access only (Storage Object Admin on the one bucket), not
-  bucket get/create — so we never make a bucket-level call here.
+  holds object-level access only (Storage Object User — read/write objects on the one
+  bucket, no bucket get/create or object-ACL admin) — so we never make a bucket-level call
+  here.
 - Keyless URL signing on Cloud Run uses the IAM SignBlob API, which needs
   ``roles/iam.serviceAccountTokenCreator`` on the runtime SA. The demo never issues
   download links, so that role is intentionally not granted; ``presigned_url`` is correct

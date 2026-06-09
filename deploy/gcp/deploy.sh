@@ -3,13 +3,20 @@
 # Deploy TrustBot to Google Cloud Run + Cloud SQL + GCS + Secret Manager.
 #
 # Parameterized and idempotent: every step guards on existence, so re-running after a
-# failure is safe. PROJECT_ID is never hardcoded — it comes from the environment. The two
-# Secret Manager secrets are referenced BY NAME (--set-secrets / in-process for the SQL
-# user password); their values are never printed, logged, or committed (note: no `set -x`).
+# failure is safe. PROJECT_ID is never hardcoded — it comes from the environment. Secret
+# Manager secrets are referenced BY NAME (--set-secrets / in-process for the SQL user
+# password); their values are never printed, logged, or committed (note: no `set -x`).
+#
+# Least privilege (docs/10 Phase A; full grant list in deploy/gcp/README.md): three distinct
+# service accounts — the public API service, the one-shot migrate/seed Job, and the build-time
+# Cloud Build identity — each scoped to only what it needs (per-secret, one-bucket object
+# access, Cloud SQL client). No Editor/Owner, no project-wide wildcards, and builds no longer
+# run as the broad Compute Engine default SA.
 #
 # Defaults deploy the PUBLIC, no-LLM demo: GENERATION_PROVIDER=fake on a public URL, so
-# there is no API key in front of an open endpoint. Override the vars below for a future
-# IAP-gated real-model instance (GENERATION_PROVIDER=api + trustbot-llm-key + ALLOW_UNAUTH=false).
+# there is no API key in front of an open endpoint (the runtime SA isn't even granted the
+# model-key secret). Override the vars below for a future IAP-gated real-model instance
+# (GENERATION_PROVIDER=anthropic + trustbot-llm-key + ALLOW_UNAUTH=false).
 #
 # Usage:
 #   PROJECT_ID=your-project ./deploy/gcp/deploy.sh
@@ -27,7 +34,12 @@ INSTANCE="${INSTANCE:-trustbot-db}"                   # Cloud SQL instance
 DB_NAME="${DB_NAME:-trustbot}"
 DB_USER="${DB_USER:-trustbot}"
 BUCKET="${BUCKET:-${PROJECT_ID}-trustbot-evidence}"   # GCS bucket (globally unique)
-SA_NAME="${SA_NAME:-trustbot-run}"                    # runtime service account
+# Three distinct least-privilege identities (blast-radius isolation): the public API service,
+# the one-shot migrate/seed Job, and the build-time Cloud Build identity each get only what
+# they need — a compromise of one cannot act as the others.
+SA_NAME="${SA_NAME:-trustbot-run}"                    # API runtime SA (Cloud Run service)
+JOB_SA_NAME="${JOB_SA_NAME:-trustbot-job}"            # migrate/seed Job SA (one-shot, not public)
+BUILD_SA_NAME="${BUILD_SA_NAME:-trustbot-build}"      # Cloud Build SA (build-time only)
 CLOUD_SQL_TIER="${CLOUD_SQL_TIER:-db-f1-micro}"       # smallest/cheapest demo tier
 CLOUD_SQL_EDITION="${CLOUD_SQL_EDITION:-ENTERPRISE}"  # shared-core tiers need Enterprise (not Plus)
 
@@ -66,6 +78,9 @@ AR_HOST="${REGION}-docker.pkg.dev"
 IMAGE_API="${AR_HOST}/${PROJECT_ID}/${REPO}/api:latest"
 IMAGE_WEB="${AR_HOST}/${PROJECT_ID}/${REPO}/web:latest"
 SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+JOB_SA_EMAIL="${JOB_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+BUILD_SA_EMAIL="${BUILD_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+BUILD_SA_REF="projects/${PROJECT_ID}/serviceAccounts/${BUILD_SA_EMAIL}"
 
 AUTH_ARGS=()
 if [ "$ALLOW_UNAUTH" = "true" ]; then
@@ -143,39 +158,79 @@ if ! gcloud storage buckets describe "gs://$BUCKET" >/dev/null 2>&1; then
     --location="$REGION" --uniform-bucket-level-access
 fi
 
-# ---- 4. Least-privilege runtime service account ------------------------------------
-if ! gcloud iam service-accounts describe "$SA_EMAIL" >/dev/null 2>&1; then
-  echo ">>> Creating service account $SA_EMAIL"
-  gcloud iam service-accounts create "$SA_NAME" --display-name="TrustBot Cloud Run runtime"
-fi
-# Secret Accessor on the two secrets only (resource-level, not project-wide). Retried
-# because a just-created service account can take a moment to be usable as a member.
-for secret in "$DB_PASSWORD_SECRET" "$LLM_KEY_SECRET"; do
-  retry gcloud secrets add-iam-policy-binding "$secret" \
-    --member="serviceAccount:$SA_EMAIL" \
-    --role=roles/secretmanager.secretAccessor >/dev/null
-done
-# Cloud SQL Client (project-level; required to open the socket).
-retry gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-  --member="serviceAccount:$SA_EMAIL" --role=roles/cloudsql.client --condition=None >/dev/null
-# Storage Object Admin on the ONE bucket only.
-retry gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
-  --member="serviceAccount:$SA_EMAIL" --role=roles/storage.objectAdmin >/dev/null
+# ---- 4. Least-privilege service accounts (the exact grants are documented in README.md) -
+# Helpers — each binding is resource-scoped where the role allows it (per-secret, one-bucket),
+# project-level only where a role has no resource scope (Cloud SQL Client). Retried because a
+# just-created service account can take a moment to be usable as an IAM member.
+ensure_sa() {  # $1=account-id  $2=display-name
+  local email="${1}@${PROJECT_ID}.iam.gserviceaccount.com"
+  if ! gcloud iam service-accounts describe "$email" >/dev/null 2>&1; then
+    echo ">>> Creating service account $email"
+    gcloud iam service-accounts create "$1" --display-name="$2"
+  fi
+}
+grant_secret() {  # $1=secret-name  $2=sa-email — Secret Accessor on ONE secret (resource-level)
+  retry gcloud secrets add-iam-policy-binding "$1" \
+    --member="serviceAccount:$2" --role=roles/secretmanager.secretAccessor >/dev/null
+}
+grant_sql_client() {  # $1=sa-email — minimal role to open the Cloud SQL socket (no resource scope)
+  retry gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:$1" --role=roles/cloudsql.client --condition=None >/dev/null
+}
+grant_bucket_objects() {  # $1=sa-email — read+write OBJECTS on the ONE bucket (not bucket admin)
+  retry gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
+    --member="serviceAccount:$1" --role=roles/storage.objectUser >/dev/null
+}
 
-# Cloud Build runs as the Compute Engine default service account; newer projects don't
-# grant it the build role by default, so it can't read the build source bucket or push to
-# Artifact Registry. Grant the builder role (one-time, build-time identity — separate from
-# the least-privilege runtime SA above).
-PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
-CLOUDBUILD_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+ensure_sa "$SA_NAME"       "TrustBot API runtime"
+ensure_sa "$JOB_SA_NAME"   "TrustBot migrate/seed job"
+ensure_sa "$BUILD_SA_NAME" "TrustBot Cloud Build"
+
+# API runtime SA (the public service): DB client + DB-password secret + bucket objects. The
+# model key is granted ONLY for a real-model deploy — the fake demo never receives it (least
+# privilege: don't hand an open public endpoint access to a key it never uses).
+grant_sql_client "$SA_EMAIL"
+grant_secret "$DB_PASSWORD_SECRET" "$SA_EMAIL"
+grant_bucket_objects "$SA_EMAIL"
+if [ "$GENERATION_PROVIDER" != "fake" ]; then
+  grant_secret "$LLM_KEY_SECRET" "$SA_EMAIL"
+fi
+
+# Migrate/seed Job SA (one-shot, not internet-facing): the same data-plane needs, but NEVER
+# the model key (the Job always runs GENERATION_PROVIDER=fake).
+grant_sql_client "$JOB_SA_EMAIL"
+grant_secret "$DB_PASSWORD_SECRET" "$JOB_SA_EMAIL"
+grant_bucket_objects "$JOB_SA_EMAIL"
+
+# Cloud Build SA: a dedicated build-time identity (push images, write build logs) — so builds
+# do NOT run as the broad Compute Engine default SA, and the build identity has zero runtime
+# data access. The builder role bundles the logging + Artifact Registry + cloudbuild-bucket
+# permissions a build needs; builds run as this SA via `--service-account` below.
 retry gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-  --member="serviceAccount:$CLOUDBUILD_SA" \
+  --member="serviceAccount:$BUILD_SA_EMAIL" \
   --role=roles/cloudbuild.builds.builder --condition=None >/dev/null
+# The principal running this script must be able to actAs the build SA for `builds submit
+# --service-account`. Grant it explicitly (idempotent; project Owners already have it via
+# their role). Best-effort: an Owner deploy works without it, so a failure here only warns.
+OPERATOR="$(gcloud config get-value account 2>/dev/null || true)"
+if [ -n "$OPERATOR" ]; then
+  case "$OPERATOR" in
+    *.gserviceaccount.com) OPERATOR_MEMBER="serviceAccount:$OPERATOR" ;;
+    *)                     OPERATOR_MEMBER="user:$OPERATOR" ;;
+  esac
+  gcloud iam service-accounts add-iam-policy-binding "$BUILD_SA_EMAIL" \
+    --member="$OPERATOR_MEMBER" --role=roles/iam.serviceAccountUser >/dev/null 2>&1 \
+    || echo "  (note: ensure '$OPERATOR' can actAs $BUILD_SA_EMAIL — Owners already can)"
+fi
 
 # ---- 5. Build + push the API image (bakes the model; stage the seed into the image) -
 echo ">>> Building API image (first build downloads the model, ~10-15 min)"
 cp -R "$SEED_DIR/." "$BACKEND_DIR/seed_bundle/"
-gcloud builds submit "$BACKEND_DIR" --tag "$IMAGE_API" --timeout=3600
+# Build as the dedicated build SA (not the Compute Engine default SA). A user-specified build
+# SA can't use the legacy default log bucket, so use a regional project-owned bucket.
+gcloud builds submit "$BACKEND_DIR" --tag "$IMAGE_API" --timeout=3600 \
+  --service-account="$BUILD_SA_REF" \
+  --default-buckets-behavior=regional-user-owned-bucket
 cleanup
 
 # ---- 6. Deploy the API (Cloud SQL attached, secrets wired, no seed on cold start) ---
@@ -211,15 +266,17 @@ JOB_ENV="APP_ENV=production,STORAGE_BACKEND=gcs,GCS_BUCKET=${BUCKET}"
 JOB_ENV="${JOB_ENV},CLOUD_SQL_INSTANCE=${INSTANCE_CONN},DB_USER=${DB_USER},DB_NAME=${DB_NAME}"
 JOB_ENV="${JOB_ENV},RUN_MIGRATIONS=true,RUN_SEED=true,SERVE=false,GENERATION_PROVIDER=fake"
 JOB_ENV="${JOB_ENV},SEED_DATA_DIR=/seed/northwind_ai"
+# Runs as the dedicated Job SA (not the API runtime SA): only DB password + bucket objects,
+# never the model key.
 if gcloud run jobs describe "$JOB_NAME" --region="$REGION" >/dev/null 2>&1; then
   gcloud run jobs update "$JOB_NAME" --image="$IMAGE_API" --region="$REGION" \
-    --service-account="$SA_EMAIL" --set-cloudsql-instances="$INSTANCE_CONN" \
+    --service-account="$JOB_SA_EMAIL" --set-cloudsql-instances="$INSTANCE_CONN" \
     --execution-environment=gen2 --memory="$API_MEMORY" --cpu="$API_CPU" \
     --max-retries=1 --task-timeout=900 \
     --set-env-vars="$JOB_ENV" --set-secrets="DB_PASSWORD=${DB_PASSWORD_SECRET}:latest"
 else
   gcloud run jobs create "$JOB_NAME" --image="$IMAGE_API" --region="$REGION" \
-    --service-account="$SA_EMAIL" --set-cloudsql-instances="$INSTANCE_CONN" \
+    --service-account="$JOB_SA_EMAIL" --set-cloudsql-instances="$INSTANCE_CONN" \
     --execution-environment=gen2 --memory="$API_MEMORY" --cpu="$API_CPU" \
     --max-retries=1 --task-timeout=900 \
     --set-env-vars="$JOB_ENV" --set-secrets="DB_PASSWORD=${DB_PASSWORD_SECRET}:latest"
@@ -231,7 +288,9 @@ gcloud run jobs execute "$JOB_NAME" --region="$REGION" --wait
 echo ">>> Building web image with NEXT_PUBLIC_API_URL=$API_URL"
 gcloud builds submit "$FRONTEND_DIR" \
   --config="$SCRIPT_DIR/cloudbuild.web.yaml" \
-  --substitutions="_API_URL=${API_URL},_IMAGE=${IMAGE_WEB}"
+  --substitutions="_API_URL=${API_URL},_IMAGE=${IMAGE_WEB}" \
+  --service-account="$BUILD_SA_REF" \
+  --default-buckets-behavior=regional-user-owned-bucket
 echo ">>> Deploying $WEB_SERVICE"
 gcloud run deploy "$WEB_SERVICE" \
   --image="$IMAGE_WEB" --region="$REGION" \
@@ -264,5 +323,7 @@ Tear everything down (see deploy/gcp/README.md for the full list):
   gcloud storage rm -r gs://$BUCKET
   gcloud artifacts repositories delete $REPO --location=$REGION -q
   gcloud iam service-accounts delete $SA_EMAIL -q
+  gcloud iam service-accounts delete $JOB_SA_EMAIL -q
+  gcloud iam service-accounts delete $BUILD_SA_EMAIL -q
 ============================================================
 EOF

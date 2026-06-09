@@ -9,11 +9,13 @@ re-run after a failure is safe).
 - `gcloud` installed and authenticated (`gcloud auth login`), with billing enabled.
 - These APIs enabled (the script also enables them idempotently): `run`, `sqladmin`,
   `artifactregistry`, `secretmanager`, `storage`, `cloudbuild`, `iam`.
-- Two Secret Manager secrets created (values never read/printed/committed by the script):
+- Secret Manager secret(s) created (values never read/printed/committed by the script):
   - `trustbot-db-password` — the Postgres app-user password (used for the Cloud SQL user
-    and injected into the services via `--set-secrets`).
-  - `trustbot-llm-key` — your model API key. **Only** wired in for a real-model provider
-    (`GENERATION_PROVIDER=anthropic` or `=api`); the default `fake` demo never receives it.
+    and injected into the services via `--set-secrets`). **Required for every deploy.**
+  - `trustbot-llm-key` — your model API key. **Only** needed for a real-model provider
+    (`GENERATION_PROVIDER=anthropic` or `=api`). The default `fake` demo never references it
+    — the script neither grants access to it nor injects it — so you don't create it at all
+    for the public demo.
 
 ## Run
 
@@ -32,11 +34,12 @@ endpoint** — no LLM exposure, no per-request model cost. Both services are
 `--allow-unauthenticated` and capped at `--max-instances=2`.
 
 The script: creates an Artifact Registry repo → a Cloud SQL instance + database + app
-user → a GCS bucket → a least-privilege runtime service account → builds & pushes the API
-image (model baked in; seed corpus staged into the image) → deploys the API (Cloud SQL
-attached, `db-password` secret wired, `APP_ENV=production`) → runs the **migrate + seed
-Job once** → builds & deploys the web image with `NEXT_PUBLIC_API_URL` set to the API's
-URL → tightens the API's CORS to the web origin. It prints both URLs at the end.
+user → a GCS bucket → **three least-privilege service accounts** (runtime / job / build,
+see below) → builds & pushes the API image (model baked in; seed corpus staged into the
+image) → deploys the API (Cloud SQL attached, `db-password` secret wired, `APP_ENV=production`)
+→ runs the **migrate + seed Job once** → builds & deploys the web image with
+`NEXT_PUBLIC_API_URL` set to the API's URL → tightens the API's CORS to the web origin. It
+prints both URLs at the end.
 
 `APP_ENV=production` means the **product** routes (upload / generate / review / export)
 work while the **debug** routes (`/debug/summary`, `/retrieve`, `/answer`) return `404`.
@@ -60,13 +63,56 @@ any OpenAI-compatible endpoint.)
 This wires `trustbot-llm-key` into the API and deploys **locked down** (no public access —
 put IAP in front). Don't expose a real model on a public URL.
 
-### Least-privilege service account
+### Least-privilege IAM — every grant, per identity
 
-The runtime SA gets exactly: **Secret Accessor** on the two secrets (resource-level),
-**Cloud SQL Client** (project-level, required to open the socket), and **Storage Object
-Admin on the one bucket only**. Keyless auth throughout — no static keys. (v4 signed
-download URLs additionally need `roles/iam.serviceAccountTokenCreator` on the SA; the demo
-doesn't issue download links, so that role is left ungranted.)
+Three distinct service accounts, each holding **only** what it needs, so a compromise of one
+cannot act as another. Keyless throughout — no static keys; each identity authenticates as
+its own ADC. The complete grant list (least privilege is documented, not assumed):
+
+**`trustbot-run` — API runtime SA** (the public Cloud Run service)
+
+| Role | Scope |
+|---|---|
+| `roles/cloudsql.client` | project (the role has no resource scope) — opens the Cloud SQL socket |
+| `roles/secretmanager.secretAccessor` | the **`trustbot-db-password`** secret only |
+| `roles/secretmanager.secretAccessor` | the **`trustbot-llm-key`** secret only — **and only when `GENERATION_PROVIDER != fake`** (the fake demo never gets the key) |
+| `roles/storage.objectUser` | the **one** bucket `gs://<project>-trustbot-evidence` only — read/write objects (no bucket admin, no object-ACL admin) |
+
+**`trustbot-job` — migrate/seed Job SA** (one-shot, not internet-facing)
+
+| Role | Scope |
+|---|---|
+| `roles/cloudsql.client` | project |
+| `roles/secretmanager.secretAccessor` | the **`trustbot-db-password`** secret only — **never** the model key (the Job always runs `fake`) |
+| `roles/storage.objectUser` | the one bucket only |
+
+**`trustbot-build` — Cloud Build SA** (build-time only; builds run as this SA via `--service-account`)
+
+| Role | Scope |
+|---|---|
+| `roles/cloudbuild.builds.builder` | project — the standard build role (push to Artifact Registry, write build logs, read the regional source/log bucket). **No runtime data access**: no DB, no secrets, no evidence bucket |
+| `roles/iam.serviceAccountUser` *(on this SA, granted to the deployer)* | so the deploying principal can `actAs` the build SA (Owners already have this) |
+
+**Not granted anywhere:** no `roles/editor`, no `roles/owner`, no project-wide wildcards, no
+`roles/storage.admin`/`objectAdmin`, and no reliance on the broad **Compute Engine default
+SA** (builds use the dedicated `trustbot-build` SA instead). v4 signed download URLs will
+additionally need `roles/iam.serviceAccountTokenCreator` on `trustbot-run` — that's Phase D;
+the fake demo issues no download links, so it is intentionally left ungranted.
+
+Audit the live grants any time:
+
+```bash
+# Project-level roles held by the TrustBot SAs (expect only cloudsql.client /
+# cloudbuild.builds.builder — never editor/owner):
+gcloud projects get-iam-policy "$PROJECT_ID" --flatten='bindings[].members' \
+  --filter='bindings.members:trustbot-' --format='table(bindings.members, bindings.role)'
+# Per-secret accessors (expect trustbot-run + trustbot-job on db-password; only trustbot-run
+# on llm-key, and only for a real-model deploy):
+gcloud secrets get-iam-policy trustbot-db-password --format='table(bindings.role, bindings.members)'
+# Bucket object access (expect objectUser for trustbot-run + trustbot-job; nothing else):
+gcloud storage buckets get-iam-policy "gs://${PROJECT_ID}-trustbot-evidence" \
+  --format='table(bindings.role, bindings.members)'
+```
 
 ## Cost
 
@@ -92,6 +138,8 @@ gcloud sql instances delete trustbot-db -q
 gcloud storage rm -r gs://${PROJECT_ID}-trustbot-evidence
 gcloud artifacts repositories delete trustbot --location=$REGION -q
 gcloud iam service-accounts delete trustbot-run@${PROJECT_ID}.iam.gserviceaccount.com -q
+gcloud iam service-accounts delete trustbot-job@${PROJECT_ID}.iam.gserviceaccount.com -q
+gcloud iam service-accounts delete trustbot-build@${PROJECT_ID}.iam.gserviceaccount.com -q
 ```
 
 (The two Secret Manager secrets are left in place — you created them; delete them

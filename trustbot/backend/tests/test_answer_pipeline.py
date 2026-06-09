@@ -178,6 +178,34 @@ def test_fedramp_denial_is_clean_grounded_negative(monkeypatch):
     assert ga.evidence_refs and ga.evidence_refs[0].source_type == "control"
 
 
+def test_held_iso_certification_is_clean_attested_cited_to_certificate(monkeypatch):
+    # 07 Phase 1.1: a held certification affirmation is a clean attested "Yes" cited to the ISO
+    # certificate — a real non-empty draft, NOT collapsed to an empty needs_input, not flagged.
+    iso = _chunk(
+        "ISO 27001 certificate and Statement of Applicability. Northwind AI holds ISO/IEC "
+        "27001 certification; the SoA also covers ISO 27017, ISO 27018, and ISO 27701.",
+        source_type="evidence",
+        title="ISO27001 Certificate and SoA",
+    )
+    _patch(
+        monkeypatch, [iso],
+        certs=frozenset({"iso 27001", "iso 27017", "iso 27018", "iso 27701"}),
+    )
+    ga = _run("Are you ISO 27001 certified?")
+    assert ga.outcome == RespondOutcome.ATTESTED
+    assert ga.short_answer.strip() and ga.answer.strip()  # non-empty draft, not needs_input
+    assert "iso" in ga.answer.lower() and "27001" in ga.answer
+    cert = [c for c in ga.claims if "27001" in c.subject]
+    assert cert and cert[0].status.value == "affirmed"
+    # Cited to the ISO certificate evidence; no "affirmed without attestation" banner.
+    assert any(
+        r.source_type == "evidence" and "iso" in (r.title or "").lower()
+        for r in ga.evidence_refs
+    )
+    assert "attestation" not in (ga.review_reason or "").lower()
+    assert ga.needs_human_review is False
+
+
 def test_fedramp_overclaim_without_attestation_is_not_emitted(monkeypatch):
     # A genuine overclaim — a model affirming FedRAMP with no held attestation — must NOT be
     # emitted as a confident "yes"; the cert outcome derivation fails it closed to needs_input.

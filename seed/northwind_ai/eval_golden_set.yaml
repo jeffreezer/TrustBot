@@ -161,6 +161,12 @@ cases:
     question: "Do you hold ISO 27001 certification?"
     expected_outcome: attested
     expected_evidence: [ISO27001_Certificate_and_SoA]
+    notes: >
+      ISO 27001 is held — a clean attested "Yes" cited to the ISO certificate/SoA. The ingested
+      ISO certificate + SoA also attest the family extensions 27017/27018/27701, so the model
+      affirming them is a TRUE claim, never an overclaim — the held primary cert must not
+      collapse to needs_input over a held extension. Held-status is evidence-derived (07
+      §3.3/§5): remove the ISO certificate from the corpus and ISO is no longer "held".
 
   - id: NW-051
     question: "Are you SOC 1 certified?"

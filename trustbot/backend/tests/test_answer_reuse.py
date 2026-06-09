@@ -10,11 +10,16 @@ from datetime import date, timedelta
 
 from app.answers.generate import (
     _approved_answer_validated_on,
+    _available_certs,
     _freshness,
     _resolve_reused_approvals,
 )
-from app.answers.schema import CitedEvidence
-from app.db.models import ApprovedAnswer, Organization
+from app.answers.schema import CitedEvidence, Claim, ClaimStatus, ClaimType
+from app.answers.validate import (
+    extract_attested_certifications,
+    validate_certification_claims,
+)
+from app.db.models import ApprovedAnswer, Evidence, Organization
 
 
 def _org(session) -> Organization:
@@ -96,3 +101,61 @@ def test_cross_org_approval_does_not_resolve(pg_session):
     aa_b = _approved(pg_session, org_b)
     # Citing org B's approval while scoped to org A must not resolve (tenancy).
     assert _resolve_reused_approvals(pg_session, org_a.id, [_cite_approved(aa_b)]) == []
+
+
+# --- held certifications are DERIVED FROM INGESTED EVIDENCE (07 §3.3/§5) -----
+
+# A synthetic ISO certificate/SoA whose OWN TEXT lists the family — extraction reads this, so
+# the held set is what the document attests, not a hand-maintained list.
+_ISO_DOC = (
+    "Certificate of Registration. Standards: ISO/IEC 27001:2022, ISO/IEC 27017:2015, "
+    "ISO/IEC 27018:2019, ISO/IEC 27701:2019. Statement of Applicability attached."
+)
+
+
+def _attestation(session, org, *, kind: str, text: str) -> Evidence:
+    ev = Evidence(
+        org_id=org.id, title=kind, evidence_type=kind, document_kind=kind,
+        attested_certifications=extract_attested_certifications(text, kind),
+        original_filename=f"{kind}.md", storage_path="", file_hash="0" * 64,
+        customer_shareable=True,
+    )
+    session.add(ev)
+    session.flush()
+    return ev
+
+
+def test_available_certs_derives_from_ingested_attestation(pg_session):
+    org = _org(pg_session)
+    iso = _attestation(pg_session, org, kind="iso_certificate", text=_ISO_DOC)
+    # The whole ISO family is extracted from the document's OWN text and recorded on the row.
+    assert set(iso.attested_certifications) == {
+        "iso 27001", "iso 27017", "iso 27018", "iso 27701"
+    }
+    held = _available_certs(pg_session, org.id)
+    assert {"iso 27001", "iso 27017", "iso 27018", "iso 27701"} <= held
+    # Nothing the org never ingested an attestation for is "held".
+    assert "fedramp" not in held and "iso 9001" not in held and "soc 1" not in held
+
+
+def test_removing_attestation_evidence_unholds_its_certs(pg_session):
+    # THE decisive test (07 §5): held-status is evidence-derived, not a declared list. With the
+    # ISO certificate ingested, ISO is held → an affirmed ISO claim is NOT an overclaim. Remove
+    # the document and ISO is no longer held → the SAME affirmation flags. Proof it comes from
+    # evidence, not a value typed into a profile.
+    org = _org(pg_session)
+    iso = _attestation(pg_session, org, kind="iso_certificate", text=_ISO_DOC)
+    affirmed_iso = Claim(
+        subject="ISO 27017", claim_type=ClaimType.CERTIFICATION, status=ClaimStatus.AFFIRMED
+    )
+
+    assert "iso 27017" in _available_certs(pg_session, org.id)
+    assert validate_certification_claims([affirmed_iso], _available_certs(pg_session, org.id)) == []
+
+    pg_session.delete(iso)
+    pg_session.flush()
+
+    held = _available_certs(pg_session, org.id)
+    assert "iso 27017" not in held
+    reasons = validate_certification_claims([affirmed_iso], held)
+    assert reasons and "ISO 27017" in reasons[0]  # now an overclaim — no attestation covers it

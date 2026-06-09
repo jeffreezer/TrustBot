@@ -12,6 +12,7 @@ from app.answers.validate import (
     acceptable_basis_gate,
     asserted_certifications,
     derive_cert_outcome,
+    extract_attested_certifications,
     normalize_cert,
     open_findings_gate,
     run_review_checks,
@@ -167,6 +168,84 @@ def test_normalize_cert_maps_subject_variants():
     assert normalize_cert("SOC2") == "soc 2"
     assert normalize_cert("ISO/IEC 27001") == "iso 27001"
     assert normalize_cert("PCI DSS") == "pci dss"
+
+
+def test_normalize_cert_covers_iso_family_distinctly():
+    # The ISO extensions are separate certifications — recognized, not conflated with 27001.
+    assert normalize_cert("ISO 27017") == "iso 27017"
+    assert normalize_cert("ISO/IEC 27018") == "iso 27018"
+    assert normalize_cert("ISO 27701") == "iso 27701"
+    assert normalize_cert("ISO 27001") == "iso 27001"
+
+
+# --- attested-cert extraction (evidence-derived held set; 07 §3.3/§5) -------
+
+def test_extract_attested_certs_reads_iso_family_from_document_text():
+    # The ISO family is extracted from the certificate's OWN text — generically (any 27xxx), so
+    # an arbitrary org's certificate grounds whatever extensions it actually lists.
+    text = (
+        "Standards: ISO/IEC 27001:2022, ISO/IEC 27017:2015, ISO/IEC 27018:2019, "
+        "ISO/IEC 27701:2019."
+    )
+    assert extract_attested_certifications(text, "iso_certificate") == [
+        "iso 27001", "iso 27017", "iso 27018", "iso 27701"
+    ]
+
+
+def test_extract_attested_certs_is_anchored_by_document_kind():
+    # A SOC 2 report that merely name-drops ISO does NOT attest ISO (kind-anchored).
+    assert extract_attested_certifications(
+        "SOC 2 Type II report. We may pursue ISO 27001 in future.", "soc2_report"
+    ) == ["soc 2"]
+    assert extract_attested_certifications(
+        "PCI DSS Attestation of Compliance.", "pci_aoc"
+    ) == ["pci dss"]
+
+
+def test_extract_attested_certs_empty_for_non_attestation_documents():
+    assert extract_attested_certifications("Mentions ISO 27001.", "policy") == []
+    assert extract_attested_certifications("ISO 27001", None) == []
+
+
+# --- held ISO family vs. genuinely-not-held cert ----------------------------
+
+# Stand-in for the evidence-derived held set: the org's ingested ISO certificate attests the
+# whole family (27001/27017/27018/27701); a held cert is one some attestation actually covers.
+_HELD = {"soc 2", "iso 27001", "iso 27017", "iso 27018", "iso 27701", "pci dss"}
+
+
+def test_held_iso_extensions_are_not_flagged():
+    claims = [
+        _claim("ISO 27001", "affirmed"),
+        _claim("ISO 27017", "affirmed"),
+        _claim("ISO/IEC 27018", "affirmed"),
+        _claim("ISO 27701", "affirmed"),
+    ]
+    assert validate_certification_claims(claims, available_certs=_HELD) == []
+
+
+def test_not_held_cert_still_flags_alongside_held_extension():
+    # Overclaim guard intact: ISO 9001 (a real cert the org does NOT hold) affirmed without a
+    # held attestation still flags, while the held ISO 27017 in the same answer does not.
+    claims = [_claim("ISO 27017", "affirmed"), _claim("ISO 9001", "affirmed")]
+    reasons = validate_certification_claims(claims, available_certs=_HELD)
+    assert reasons and "ISO 9001" in reasons[0]
+    assert "27017" not in reasons[0]
+
+
+def test_held_extension_affirmation_derives_attested():
+    # The fix: a held extension affirmed alongside the held primary → attested (NOT collapsed).
+    claims = [_claim("ISO 27001", "affirmed", basis=["c1"]), _claim("ISO 27017", "affirmed")]
+    assert derive_cert_outcome(claims, available_certs=_HELD) == RespondOutcome.ATTESTED
+
+
+def test_unheld_extension_in_narrow_holdings_would_collapse_to_needs_input():
+    # The BUG, pinned: if the held set is narrow ({iso 27001} only — e.g. the certificate didn't
+    # attest the extensions), an affirmed ISO 27017 reads as an overclaim and sinks the whole
+    # answer to needs_input. The evidence-derived held set that includes what the ISO certificate
+    # actually attests (test above) is the fix — fail-without / pass-with, at the logic level.
+    claims = [_claim("ISO 27001", "affirmed", basis=["c1"]), _claim("ISO 27017", "affirmed")]
+    assert derive_cert_outcome(claims, available_certs={"iso 27001"}) == RespondOutcome.NEEDS_INPUT
 
 
 def test_fedramp_fix_prose_scan_would_flag_but_structure_does_not():

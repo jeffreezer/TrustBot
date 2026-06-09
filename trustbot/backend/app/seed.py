@@ -32,6 +32,7 @@ import openpyxl
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .answers.validate import extract_attested_certifications
 from .config import settings
 from .db import SessionLocal
 from .db.models import (
@@ -237,11 +238,20 @@ def _seed_evidence(
         etype, confidentiality, shareable = EVIDENCE_META.get(
             stem, ("document", "confidential", False)
         )
+        document_kind = _document_kind(etype)
+        # Evidence-derived cert grounding (07 §3.3/§5): extract, from the document's OWN text,
+        # which certifications it attests, and record them on the row. This — not any
+        # self-declared list — is what makes a cert "held". A real upload path would call the
+        # same extractor (model-assisted + human-confirmed for arbitrary PDFs).
+        attested_certifications = extract_attested_certifications(
+            data.decode("utf-8", "ignore"), document_kind
+        )
         ev = Evidence(
             org_id=org.id,
             title=stem.replace("_", " "),
             evidence_type=etype,
-            document_kind=_document_kind(etype),
+            document_kind=document_kind,
+            attested_certifications=attested_certifications,
             original_filename=file_path.name,
             storage_path="",  # set after we know the evidence id
             content_type=mimetypes.guess_type(file_path.name)[0] or "text/markdown",

@@ -71,6 +71,8 @@ Milestone 1, the Questionnaire Responder, is complete: evidence-grounded draftin
 - **Milestone 2, Vendor Review (TPRM):** the inverse problem. Assess third-party vendors' submitted questionnaires and evidence, with auditability and defensibility. It builds on the shared engine and the quarantine and injection defense already in place.
 - **Milestone 3, Trust Center:** a self-service portal to publish the same evidence to customers under NDA.
 
+For how a real organization would onboard its own evidence (Google Drive / Confluence / Glean), see [docs/08_TrustBot_Source_Connectors.md](docs/08_TrustBot_Source_Connectors.md). For an honest map of what is production-ready today versus what is still needed (authentication, evidence onboarding, real-document robustness, and operational hardening), see [docs/09_TrustBot_Production_Readiness.md](docs/09_TrustBot_Production_Readiness.md).
+
 ## License
 
 [MIT](LICENSE). Copyright 2026 Jeff Goodwin.

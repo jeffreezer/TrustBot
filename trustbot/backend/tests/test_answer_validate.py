@@ -239,6 +239,24 @@ def test_held_extension_affirmation_derives_attested():
     assert derive_cert_outcome(claims, available_certs=_HELD) == RespondOutcome.ATTESTED
 
 
+def test_iso_family_specificity_held_set_of_only_27001_flags_siblings():
+    # Regression (07 §3.3/§5): the generic ISO 27xxx recognizer matches FORMAT generically but
+    # held-status stays PER STANDARD — the family is never collapsed onto one canonical name.
+    # With only ISO 27001 held, the primary affirmation is clean while any sibling is an
+    # overclaim. (No DB: runs everywhere, so the guarantee can't silently skip.)
+    held = {"iso 27001"}
+    assert validate_certification_claims([_claim("ISO 27001", "affirmed")], held) == []
+    for sibling in ("ISO 27017", "ISO 27018", "ISO 27701", "ISO/IEC 27701:2019"):
+        reasons = validate_certification_claims([_claim(sibling, "affirmed")], held)
+        assert reasons and sibling in reasons[0], f"{sibling} must flag as an overclaim"
+    # The property that makes the above hold: normalization keeps each 27xxx distinct.
+    assert normalize_cert("ISO 27017") == "iso 27017"
+    assert normalize_cert("ISO/IEC 27701:2019") == "iso 27701"
+    assert len({
+        normalize_cert(s) for s in ("ISO 27001", "ISO 27017", "ISO 27018", "ISO 27701")
+    }) == 4
+
+
 def test_unheld_extension_in_narrow_holdings_would_collapse_to_needs_input():
     # The BUG, pinned: if the held set is narrow ({iso 27001} only — e.g. the certificate didn't
     # attest the extensions), an affirmed ISO 27017 reads as an overclaim and sinks the whole

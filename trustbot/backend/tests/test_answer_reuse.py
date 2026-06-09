@@ -159,3 +159,33 @@ def test_removing_attestation_evidence_unholds_its_certs(pg_session):
     assert "iso 27017" not in held
     reasons = validate_certification_claims([affirmed_iso], held)
     assert reasons and "ISO 27017" in reasons[0]  # now an overclaim — no attestation covers it
+
+
+def test_iso_family_held_status_is_per_standard_not_collapsed(pg_session):
+    # Regression (07 §3.3/§5): the generic ISO 27xxx recognizer matches the FORMAT of any
+    # standard, but held-status is per SPECIFIC standard — never collapsed across the family. A
+    # certificate whose own text names ONLY ISO 27001 makes ONLY 27001 held; affirming a sibling
+    # it does not list is an overclaim. If the recognizer ever collapsed siblings onto "iso
+    # 27001" (one canonical name for the whole family), every 27xxx would blanket-affirm and the
+    # org would overclaim certs it doesn't hold — this pins against that.
+    org = _org(pg_session)
+    iso = _attestation(
+        pg_session, org, kind="iso_certificate",
+        text="Certificate of Registration. Standards: ISO/IEC 27001:2022.",
+    )
+    assert set(iso.attested_certifications) == {"iso 27001"}  # ONLY the listed standard
+    held = _available_certs(pg_session, org.id)
+    assert held == {"iso 27001"}
+
+    def _affirm(subject: str) -> list[str]:
+        claim = Claim(
+            subject=subject, claim_type=ClaimType.CERTIFICATION, status=ClaimStatus.AFFIRMED
+        )
+        return validate_certification_claims([claim], held)
+
+    # The held primary is a clean affirmation...
+    assert _affirm("ISO 27001") == []
+    # ...but siblings the certificate does NOT list are overclaims (family NOT collapsed).
+    for sibling in ("ISO 27017", "ISO 27018", "ISO 27701"):
+        reasons = _affirm(sibling)
+        assert reasons and sibling in reasons[0], f"{sibling} must flag as an overclaim"

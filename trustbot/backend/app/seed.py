@@ -481,8 +481,13 @@ def _seed_knowledge_chunks(
         text = _control_text(control)
         if not text:
             continue
-        # Control implementation statements are internal descriptions that inform a
-        # drafted answer; the answer is what goes external, so they are not shareable.
+        # Control implementation statements are internal descriptions that inform a drafted
+        # answer; the answer is what goes external, so they are not shareable — EXCEPT a
+        # compliance-posture control (domain "Compliance"), which exists precisely to STATE the
+        # external certification/authorization scope (e.g. "not FedRAMP authorized"). That is a
+        # customer-facing statement by nature, so it is shareable and can be cited as the basis
+        # for a grounded negative (07 claim/attestation model).
+        is_compliance_posture = (control.domain or "").strip().lower() == "compliance"
         total += ingest_text(
             session,
             org_id=org.id,
@@ -493,8 +498,8 @@ def _seed_knowledge_chunks(
                 "title": control.title,
                 "control_code": control.control_code,
                 "domain": control.domain,
-                "confidentiality": "internal",
-                "customer_shareable": False,
+                "confidentiality": "confidential" if is_compliance_posture else "internal",
+                "customer_shareable": is_compliance_posture,
             },
             provider=provider,
         )

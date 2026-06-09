@@ -129,24 +129,32 @@ cases:
       (H-01 in_progress, target 2026-05-15). The open finding HAS a target date, so it
       renders rather than refusing (contrast open_findings_gate when a date is missing).
 
-  # --- Honest negatives on un-held certifications (still flagged for review) ---
-  # Per 05 the designed-correct outcome is an honest "no", NOT needs_input — Northwind
-  # truthfully is not FedRAMP-authorized and does not offer a BAA. The cert validator still
-  # flags the answer for human review (it detects the cert keyword regardless of polarity),
-  # so needs_input_safety holds via the review flag — we never EMIT a bare confident "no".
+  # --- Honest negatives on certifications (07 claim/attestation model) ---
+  # A certification answer is now read from the declared claim STATUS, not the prose. FedRAMP
+  # is GROUNDED on the compliance-posture control CMP-04, so the honest "No" is a clean,
+  # citeable NEGATIVE — and the cert overclaim validator NEVER flags a denial (the FedRAMP
+  # "certification claimed without supporting evidence" banner, fixed structurally). HIPAA BAA
+  # stays un-grounded → needs_input/flagged, keeping needs_input_safety covered offline via
+  # NW-041.
   - id: NW-040
     question: "Are you FedRAMP authorized?"
     expected_outcome: negative
-    expected_evidence: []
-    gates: [needs_input_safety]
-    notes: Honest "No, not FedRAMP authorized" — and flagged for review (no positive evidence).
+    expected_evidence: [CMP-04]
+    notes: >
+      Grounded honest "No, not FedRAMP authorized", cited to CMP-04 (the FedRAMP-position
+      control). Derived from a denied certification claim — a clean negative that does NOT trip
+      the cert overclaim validator and carries no false "certification claimed" banner.
 
   - id: NW-041
     question: "Will you sign a HIPAA Business Associate Agreement (BAA)?"
     expected_outcome: negative
     expected_evidence: []
     gates: [needs_input_safety]
-    notes: Honest "No" — Northwind does not solicit PHI / offer a BAA; flagged for review.
+    notes: >
+      Honest "No" — Northwind does not solicit PHI / offer a BAA. Grounded only on a prior
+      approved answer (no controlling control), so it is flagged for human re-confirmation
+      (principle 7 — reuse is a re-validated candidate, any polarity), which keeps
+      needs_input_safety covered offline.
 
   # --- Overclaim guard & scope ---
   - id: NW-050
@@ -211,8 +219,8 @@ cases:
       doc — never needs_input.
 
   - id: NW-071
-    # Four-part compound: three parts are supported, one (FedRAMP) is not — the answer must
-    # address each supported part with its own evidence and flag the unsupported part.
+    # Four-part compound: each part answered with its own evidence — three affirmatives plus a
+    # grounded FedRAMP negative — so the whole is a mixed-support QUALIFIED, never a collapse.
     question: >
       Please confirm each of the following: (1) Do you encrypt customer data at rest?
       (2) Do you perform background checks on personnel? (3) Do you hold ISO 27001
@@ -222,9 +230,9 @@ cases:
     gates: [multi_part]
     notes: >
       Decomposed into four atomic sub-questions. Encryption-at-rest, personnel screening, and
-      ISO 27001 are each supported (distinct sources, own citations); FedRAMP is not, so that
-      part is flagged for human review and the rest are answered — overall QUALIFIED (mixed
-      support), never a whole-question needs_input collapse.
+      ISO 27001 are each supported affirmatives (distinct sources, own citations); FedRAMP is a
+      grounded negative (CMP-04) — a denied certification claim, not an unknown. Overall
+      QUALIFIED (mixed support: yeses + an honest no), never a whole-question needs_input.
 
   - id: NW-072
     # Compound but genuinely no-evidence: even with the loop, absent evidence -> needs_input.

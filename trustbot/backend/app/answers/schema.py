@@ -58,6 +58,48 @@ class ConfidenceBand(str, Enum):
     NONE = "none"
 
 
+class ClaimType(str, Enum):
+    """What kind of assertion a claim makes (07 §3.1). **Phase 1 populates only
+    ``certification``**; control/practice/attestation land in later phases (07 §7) — the enum
+    carries them now so the structure is forward-compatible without another migration."""
+
+    CERTIFICATION = "certification"
+    CONTROL = "control"
+    PRACTICE = "practice"
+    ATTESTATION = "attestation"
+
+
+class ClaimStatus(str, Enum):
+    """The polarity the model *declares* for a claim (07 §3.1). Outcome + validators derive
+    from this — not from re-classifying the prose — which is what retires the polarity-blind
+    bug class (a ``denied`` cert can never be read as a "yes")."""
+
+    AFFIRMED = "affirmed"
+    QUALIFIED = "qualified"
+    DENIED = "denied"
+    UNKNOWN = "unknown"
+
+
+class Claim(BaseModel):
+    """A structured assertion the generator declares alongside the prose (07 §3.1).
+
+    ``basis`` lists candidate grounding refs the model names; the pipeline **resolves them
+    server-side** against the org-scoped grounding pool, dropping any that don't resolve to a
+    real, org-owned record (an unresolvable / cross-org ref is fabrication — same discipline as
+    document and approved-answer refs). Deterministic validators read this structure; the model
+    only declares it. Phase 1 emits these for certifications only."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    subject: str
+    claim_type: ClaimType = ClaimType.CERTIFICATION
+    status: ClaimStatus
+    # Resolvable org-owned grounding refs (knowledge-chunk ids). Server-side resolved.
+    basis: list[str] = Field(default_factory=list)
+    confidence: float | None = None
+    customer_shareable: bool = True
+
+
 @dataclass(frozen=True)
 class CitedEvidence:
     """A retrieved chunk available for citation — the DB-free view used by the
@@ -110,6 +152,10 @@ class AnswerDraft(BaseModel):
     scope: str = ""
     evidence_refs: list[str] = Field(default_factory=list)
     requires_document: bool = False
+    # Structured claims declared alongside the prose (07 §3.1). Phase 1: certifications only.
+    # Optional — a plain answer that asserts no certification carries no claims (lightweight
+    # common case, never a ceremony). basis refs are resolved server-side by the pipeline.
+    claims: list[Claim] = Field(default_factory=list)
     model_note: str = ""  # reason carried when outcome is needs_input
 
 
@@ -149,6 +195,10 @@ class GeneratedAnswer(BaseModel):
     claim: str = ""
     scope: str = ""
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+    # Structured claims (07 §3.1), with basis already resolved server-side to org-owned refs.
+    # Phase 1: certification claims only. The certification-question outcome + the cert
+    # overclaim validator derive from these, not from the prose.
+    claims: list[Claim] = Field(default_factory=list)
     requires_document: bool = False
     provided_documents: list[ProvidedDocument] = Field(default_factory=list)
     # Generic document-request (05 §8): no specific artifact named, so attachment is deferred

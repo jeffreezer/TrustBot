@@ -4,6 +4,9 @@ from pydantic import ValidationError
 
 from app.answers.schema import (
     AnswerDraft,
+    Claim,
+    ClaimStatus,
+    ClaimType,
     ConfidenceBand,
     GeneratedAnswer,
     RespondOutcome,
@@ -65,3 +68,30 @@ def test_generated_answer_respond_attributes_default_empty():
     assert ga.provided_documents == []
     assert ga.remediation_required is False
     assert ga.finding_refs == []
+    assert ga.claims == []  # claim/attestation model (07): default empty, never a ceremony
+
+
+# --- structured claims (07 §3.1) -------------------------------------------
+
+def test_answer_draft_claims_default_empty_and_parse():
+    plain = AnswerDraft.model_validate_json('{"outcome": "negative", "short_answer": "No."}')
+    assert plain.claims == []  # a plain answer carries no claims
+    drafted = AnswerDraft.model_validate_json(
+        '{"outcome": "negative", "claims": [{"subject": "FedRAMP", '
+        '"claim_type": "certification", "status": "denied", "basis": ["c1"]}]}'
+    )
+    assert drafted.claims[0].subject == "FedRAMP"
+    assert drafted.claims[0].claim_type is ClaimType.CERTIFICATION
+    assert drafted.claims[0].status is ClaimStatus.DENIED
+    assert drafted.claims[0].basis == ["c1"]
+
+
+def test_claim_rejects_invalid_status():
+    with pytest.raises(ValidationError):
+        Claim(subject="FedRAMP", status="maybe")
+
+
+def test_claim_defaults_are_lightweight():
+    c = Claim(subject="SOC 2", status=ClaimStatus.AFFIRMED)
+    assert c.claim_type is ClaimType.CERTIFICATION  # Phase 1 default
+    assert c.basis == [] and c.confidence is None and c.customer_shareable is True

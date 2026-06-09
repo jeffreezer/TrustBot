@@ -1,16 +1,34 @@
 """Respond-mode validators — downgrade gates + review flags, each fails closed."""
-from app.answers.schema import AnswerDraft, CitedEvidence, RespondOutcome
+from app.answers.schema import (
+    AnswerDraft,
+    CitedEvidence,
+    Claim,
+    ClaimStatus,
+    ClaimType,
+    RespondOutcome,
+)
 from app.answers.validate import (
     FindingStatus,
     acceptable_basis_gate,
     asserted_certifications,
+    derive_cert_outcome,
+    normalize_cert,
     open_findings_gate,
     run_review_checks,
-    validate_certifications,
+    validate_certification_claims,
     validate_citations,
     validate_required_fields,
     validate_shareability,
 )
+
+
+def _claim(subject, status, *, claim_type=ClaimType.CERTIFICATION, basis=None):
+    return Claim(
+        subject=subject,
+        claim_type=claim_type,
+        status=ClaimStatus(status),
+        basis=list(basis or []),
+    )
 
 
 def _draft(**kw):
@@ -105,29 +123,84 @@ def test_no_remediation_required_skips_gate():
     assert open_findings_gate(False, findings) is None
 
 
-# --- certifications ---------------------------------------------------------
+# --- certification claims (structural, polarity-aware; 07 §3.3) -------------
+# These three pin the FedRAMP fix: read the declared claim STATUS, not the prose.
 
-def test_cert_claimed_without_evidence_is_rejected():
-    draft = _draft(claim="We are SOC 1 certified.", answer="SOC 1 certified.")
-    reasons = validate_certifications(draft, available_certs={"soc 2", "iso 27001"})
-    assert reasons and "soc 1" in reasons[0]
-
-
-def test_cert_claimed_with_evidence_passes():
-    draft = _draft(claim="We hold SOC 2.", answer="SOC 2 Type 2.")
-    assert validate_certifications(draft, available_certs={"soc 2"}) == []
+def test_denied_certification_is_never_flagged():
+    # The FedRAMP fix: a grounded "No, not FedRAMP authorized" must NOT trip the cert
+    # validator — a denial is never an overclaim, regardless of held attestations.
+    claims = [_claim("FedRAMP", "denied", basis=["chunk-cmp04"])]
+    assert validate_certification_claims(claims, available_certs=set()) == []
 
 
-def test_needs_input_outcome_skips_cert_check():
-    draft = _draft(outcome=RespondOutcome.NEEDS_INPUT, short_answer="", claim="", answer="FedRAMP")
-    assert validate_certifications(draft, available_certs=set()) == []
+def test_affirmed_certification_without_attestation_is_flagged():
+    # A genuine overclaim — "We are FedRAMP authorized" with no held attestation — still fires.
+    reasons = validate_certification_claims([_claim("FedRAMP", "affirmed")], {"soc 2"})
+    assert reasons and "FedRAMP" in reasons[0]
 
 
-def test_asserted_certifications_detects_keywords():
-    assert asserted_certifications("We are FedRAMP authorized and SOC 2 compliant.") == {
-        "fedramp",
-        "soc 2",
-    }
+def test_mixed_answer_flags_only_unsupported_affirmation():
+    # "SOC 2 certified, not FedRAMP", no held attestations: the SOC 2 affirmation is the only
+    # overclaim; the FedRAMP DENIAL is never flagged. Per-claim, polarity-aware.
+    claims = [
+        _claim("SOC 2", "affirmed"),
+        _claim("FedRAMP", "denied", basis=["chunk-cmp04"]),
+    ]
+    reasons = validate_certification_claims(claims, available_certs=set())
+    assert reasons and "SOC 2" in reasons[0]
+    assert "FedRAMP" not in reasons[0]
+
+
+def test_affirmed_certification_with_attestation_passes():
+    claims = [_claim("SOC 2", "affirmed", basis=["chunk-soc2"])]
+    assert validate_certification_claims(claims, available_certs={"soc 2"}) == []
+
+
+def test_non_certification_claim_is_ignored_by_cert_validator():
+    # Phase 1 scopes the cert validator to certification claims only.
+    claims = [_claim("encryption at rest", "affirmed", claim_type=ClaimType.CONTROL)]
+    assert validate_certification_claims(claims, available_certs=set()) == []
+
+
+def test_normalize_cert_maps_subject_variants():
+    assert normalize_cert("FedRAMP") == "fedramp"
+    assert normalize_cert("SOC2") == "soc 2"
+    assert normalize_cert("ISO/IEC 27001") == "iso 27001"
+    assert normalize_cert("PCI DSS") == "pci dss"
+
+
+def test_fedramp_fix_prose_scan_would_flag_but_structure_does_not():
+    # Regression pin: the OLD prose scan saw the cert keyword in a correct negative and flagged
+    # it; the structural per-claim check does not. This is the bug, fixed structurally.
+    assert asserted_certifications("No. Northwind is not FedRAMP authorized.") == {"fedramp"}
+    claims = [_claim("FedRAMP", "denied", basis=["chunk-cmp04"])]
+    assert validate_certification_claims(claims, available_certs=set()) == []
+
+
+# --- certification outcome derived from claim status (07 §3.2) --------------
+
+def test_derive_cert_outcome_none_when_no_cert_claims():
+    assert derive_cert_outcome([], available_certs=set()) is None
+
+
+def test_derive_cert_outcome_grounded_denial_is_negative():
+    claims = [_claim("FedRAMP", "denied", basis=["chunk-cmp04"])]
+    assert derive_cert_outcome(claims, available_certs=set()) == RespondOutcome.NEGATIVE
+
+
+def test_derive_cert_outcome_ungrounded_denial_is_needs_input():
+    assert derive_cert_outcome([_claim("FedRAMP", "denied")], set()) == RespondOutcome.NEEDS_INPUT
+
+
+def test_derive_cert_outcome_affirmed_with_attestation_is_attested():
+    claims = [_claim("SOC 2", "affirmed", basis=["chunk-soc2"])]
+    assert derive_cert_outcome(claims, available_certs={"soc 2"}) == RespondOutcome.ATTESTED
+
+
+def test_derive_cert_outcome_overclaim_is_needs_input():
+    assert derive_cert_outcome([_claim("FedRAMP", "affirmed")], {"soc 2"}) == (
+        RespondOutcome.NEEDS_INPUT
+    )
 
 
 # --- shareability -----------------------------------------------------------
@@ -154,13 +227,14 @@ def test_required_fields_for_drafted_outcome():
 
 
 def test_run_review_checks_aggregates_failures():
-    draft = _draft(claim="We are SOC 1 certified.", evidence_refs=["ghost"])
+    draft = _draft(evidence_refs=["ghost"])
     reasons = run_review_checks(
         draft,
         [_cite("a", shareable=False)],
         grounding_refs=["a"],
+        claims=[_claim("SOC 1", "affirmed")],
         available_certs={"soc 2"},
         customer_facing=True,
     )
-    # citation + cert + shareability all fire.
+    # citation + cert (structural) + shareability all fire.
     assert len(reasons) >= 3

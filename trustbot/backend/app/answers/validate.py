@@ -12,7 +12,15 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from .schema import RESPOND_DRAFTED, AnswerDraft, CitedEvidence, RespondOutcome
+from .schema import (
+    RESPOND_DRAFTED,
+    AnswerDraft,
+    CitedEvidence,
+    Claim,
+    ClaimStatus,
+    ClaimType,
+    RespondOutcome,
+)
 
 # Document-tier basis: a current owned policy / control / attestation document. This is the
 # *higher-authority* tier — an answer with one of these stands on its own.
@@ -28,12 +36,14 @@ ACCEPTABLE_BASIS_SOURCE_TYPES = CONTROLLING_SOURCE_TYPES | frozenset({"approved_
 
 _AFFIRMATIVE = frozenset({RespondOutcome.ATTESTED, RespondOutcome.QUALIFIED})
 
-# Certifications recognizable in answer text; the pipeline supplies which the org actually
-# holds attestation evidence for — any *asserted* cert not in that set is an overclaim.
+# Canonical certification names + their recognizers. Two uses: (1) ``asserted_certifications``
+# scans emitted prose as a defense-in-depth backstop (the eval no_overclaim gate); (2)
+# ``normalize_cert`` maps a claim's free-text ``subject`` ("FedRAMP", "SOC2", "ISO/IEC 27001")
+# onto a canonical name so it can be compared against the org's held attestations.
 _CERT_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"\bsoc\s*2\b", "soc 2"),
     (r"\bsoc\s*1\b", "soc 1"),
-    (r"\biso\s*27001\b", "iso 27001"),
+    (r"\biso\s*/?\s*(?:iec\s*)?27001\b", "iso 27001"),
     (r"\bpci(?:\s*dss)?\b", "pci dss"),
     (r"\bfedramp\b", "fedramp"),
     (r"\bhipaa\b", "hipaa"),
@@ -119,18 +129,82 @@ def validate_citations(draft: AnswerDraft, grounding_refs: Sequence[str]) -> lis
     return reasons
 
 
-def validate_certifications(
-    draft: AnswerDraft, available_certs: Sequence[str]
+def normalize_cert(subject: str) -> str:
+    """Map a claim's free-text certification ``subject`` onto a canonical cert name (so
+    "FedRAMP" / "SOC2" / "ISO/IEC 27001" compare against the org's held attestations). Falls
+    back to a lowercased/whitespace-collapsed form when no canonical name matches."""
+    low = (subject or "").lower()
+    for pattern, name in _CERT_PATTERNS:
+        if re.search(pattern, low):
+            return name
+    return re.sub(r"\s+", " ", low).strip()
+
+
+def certification_claims(claims: Sequence[Claim]) -> list[Claim]:
+    return [c for c in claims if c.claim_type == ClaimType.CERTIFICATION]
+
+
+def validate_certification_claims(
+    claims: Sequence[Claim], available_certs: Sequence[str]
 ) -> list[str]:
-    """No certification asserted unless the org has a supporting attestation record."""
-    if draft.outcome not in RESPOND_DRAFTED:
-        return []
-    available = {c.lower() for c in available_certs}
-    text = f"{draft.short_answer}\n{draft.answer}\n{draft.claim}"
-    unsupported = sorted(c for c in asserted_certifications(text) if c not in available)
-    if unsupported:
-        return [f"certification claimed without supporting evidence: {unsupported}"]
+    """Certification overclaim, read from the STRUCTURE not the prose (07 §3.3).
+
+    A ``certification`` claim with ``status: affirmed`` must rest on an attestation the org
+    actually holds (``available_certs``, derived server-side from the org's attestation
+    evidence). A ``denied`` / ``qualified`` / ``unknown`` certification is **never** flagged —
+    so a grounded negative ("No, not FedRAMP authorized") no longer trips this check. The pass
+    is **per-claim**, so a mixed answer ("SOC 2 certified, not FedRAMP") flags only the
+    unsupported affirmation, never the truthful denial. This replaces the old polarity-blind
+    prose-keyword scan that mis-fired on correct negatives."""
+    available = {normalize_cert(c) for c in available_certs}
+    overclaimed = sorted(
+        c.subject
+        for c in certification_claims(claims)
+        if c.status == ClaimStatus.AFFIRMED and normalize_cert(c.subject) not in available
+    )
+    if overclaimed:
+        return [f"certification affirmed without a supporting attestation: {overclaimed}"]
     return []
+
+
+def derive_cert_outcome(
+    cert_claims: Sequence[Claim], available_certs: Sequence[str]
+) -> RespondOutcome | None:
+    """Derive a certification question's outcome from the declared claim status (07 §3.2),
+    polarity-first so the prose classifier can never read a denial as a "yes".
+
+    Returns ``None`` when there are no certification claims (the caller keeps the prose-derived
+    outcome — Phase 1 derives from claims for cert questions only). Otherwise:
+      - an ``affirmed`` cert without a held attestation → ``needs_input`` (overclaim, fail-closed)
+      - any ``qualified`` cert, or a mix of supported affirmations and denials → ``qualified``
+      - all ``affirmed`` (each with a held attestation) → ``attested``
+      - a ``denied`` cert **with** a resolvable basis → ``negative`` (a grounded, clean "no");
+        a denial with no basis, or nothing actionable → ``needs_input``"""
+    cert_claims = certification_claims(cert_claims)
+    if not cert_claims:
+        return None
+    available = {normalize_cert(c) for c in available_certs}
+
+    def has_attestation(claim: Claim) -> bool:
+        return normalize_cert(claim.subject) in available
+
+    affirmed = [c for c in cert_claims if c.status == ClaimStatus.AFFIRMED]
+    qualified = [c for c in cert_claims if c.status == ClaimStatus.QUALIFIED]
+    denied = [c for c in cert_claims if c.status == ClaimStatus.DENIED]
+
+    if any(not has_attestation(c) for c in affirmed):
+        return RespondOutcome.NEEDS_INPUT  # overclaim — don't emit a false "yes"
+    if qualified or (affirmed and denied):
+        return RespondOutcome.QUALIFIED
+    if affirmed:
+        return RespondOutcome.ATTESTED
+    if denied:
+        return (
+            RespondOutcome.NEGATIVE
+            if any(c.basis for c in denied)
+            else RespondOutcome.NEEDS_INPUT
+        )
+    return RespondOutcome.NEEDS_INPUT
 
 
 def validate_shareability(
@@ -174,14 +248,16 @@ def run_review_checks(
     cited: Sequence[CitedEvidence],
     *,
     grounding_refs: Sequence[str],
+    claims: Sequence[Claim],
     available_certs: Sequence[str],
     customer_facing: bool = True,
 ) -> list[str]:
-    """The review-flag validators (aggregated reasons; empty == pass)."""
+    """The review-flag validators (aggregated reasons; empty == pass). The certification check
+    reads the structured ``claims`` (07 §3.3), not the prose — polarity-aware and per-claim."""
     reasons: list[str] = []
     reasons += validate_required_fields(draft)
     reasons += validate_citations(draft, grounding_refs)
-    reasons += validate_certifications(draft, available_certs)
+    reasons += validate_certification_claims(claims, available_certs)
     reasons += validate_shareability(cited, customer_facing=customer_facing)
     reasons += validate_no_system_leakage(draft)
     return reasons
@@ -192,11 +268,14 @@ __all__ = [
     "ACCEPTABLE_BASIS_SOURCE_TYPES",
     "FindingStatus",
     "asserted_certifications",
+    "normalize_cert",
+    "certification_claims",
     "acceptable_basis_gate",
     "open_findings_gate",
     "validate_required_fields",
     "validate_citations",
-    "validate_certifications",
+    "validate_certification_claims",
+    "derive_cert_outcome",
     "validate_shareability",
     "validate_no_system_leakage",
     "run_review_checks",

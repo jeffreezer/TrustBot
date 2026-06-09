@@ -4,8 +4,9 @@ Two kinds of result:
 
 * GATES (must pass; cause a non-zero exit) — the *safety* / reframe guarantees that hold
   regardless of the generator's quality, because the pipeline enforces them deterministically:
-    - needs_input_safety: every needs_input-expected case (FedRAMP, HIPAA BAA, SOC 1)
-      resolves to needs_input or human review — never a fabricated affirmation.
+    - needs_input_safety: every no-controlling-evidence case (HIPAA BAA, SOC 1) resolves to
+      needs_input or human review — never a fabricated affirmation. (FedRAMP is now a grounded
+      negative cited to control CMP-04, so it is graded on outcome, not this gate — 07 §3.)
     - no_overclaim: no EMITTED answer asserts a certification it lacks evidence for.
     - four_tiers_and_policy (NW-005): lists the four tiers and cites a policy.
     - affirm_despite_exception (NW-020): a SOC 2-covered control stays AFFIRMED — the

@@ -252,6 +252,11 @@ class Answer(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     claim: Mapped[str | None] = mapped_column(Text)
     scope: Mapped[str | None] = mapped_column(Text)
     evidence_refs: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # Structured claims backing this answer (07 §3.1; claim/attestation model). Phase 1 stores
+    # certification claims only: [{subject, claim_type, status, basis[], confidence,
+    # customer_shareable}]. The cert-question outcome + overclaim validator derive from these,
+    # not the prose. Empty for answers that assert no certification.
+    claims: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     # exceptions: review-mode field (Milestone 2). Parked — respond mode never writes it.
     exceptions: Mapped[str | None] = mapped_column(Text)
     confidence: Mapped[str | None] = mapped_column(String(32))

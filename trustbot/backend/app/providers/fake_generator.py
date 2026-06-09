@@ -106,6 +106,27 @@ _STOPWORDS = frozenset(
     "we what when where which who why with you your is".split()
 )
 
+# Certification subjects the fake recognizes in a QUESTION, mapped to canonical display names
+# (07 §3.1). When a cert question is asked, the fake emits a structured certification claim
+# alongside the prose so the offline pipeline/tests exercise the claim path (SOC 2 first, so
+# "SOC 1" doesn't shadow it). The pipeline resolves the claim's basis + derives the outcome.
+_CERT_SUBJECTS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bsoc\s*2\b|\bsoc\s*ii\b|\bsoc2\b"), "SOC 2"),
+    (re.compile(r"\bsoc\s*1\b|\bssae\s*18\b"), "SOC 1"),
+    (re.compile(r"\biso\s*/?\s*(?:iec\s*)?27001\b"), "ISO 27001"),
+    (re.compile(r"\bpci(?:\s*dss)?\b"), "PCI DSS"),
+    (re.compile(r"\bfedramp\b"), "FedRAMP"),
+    (re.compile(r"\bhipaa\b"), "HIPAA"),
+    (re.compile(r"\bfips\s*140\b"), "FIPS 140"),
+)
+# Composed prose outcome -> the polarity the cert claim DECLARES.
+_OUTCOME_TO_STATUS = {
+    "attested": "affirmed",
+    "qualified": "qualified",
+    "negative": "denied",
+    "needs_input": "unknown",
+}
+
 
 def _terms(text: str) -> set[str]:
     return {t for t in _TOKEN_RE.findall(text.lower()) if t not in _STOPWORDS and len(t) > 2}
@@ -213,6 +234,10 @@ class FakeGenerationProvider(GenerationProvider):
             "claim": claim,
             "scope": scope,
             "evidence_refs": refs,
+            # Structured certification claim(s) declared from the composed polarity (07 §3.1).
+            # Only present for certification questions; basis = the cited refs (the pipeline
+            # resolves them server-side). A denial declares status 'denied' — never a "yes".
+            "claims": self._cert_claims(question, outcome, refs),
             "requires_document": requires_document,
         }
 
@@ -295,6 +320,30 @@ class FakeGenerationProvider(GenerationProvider):
         if not q_terms:
             return sentences[0].lower()
         return max(sentences, key=lambda s: len(q_terms & _terms(s))).lower()
+
+    @staticmethod
+    def _cert_claims(question: str, outcome: str, refs: list[str]) -> list[dict]:
+        """Emit one certification claim per cert named in the QUESTION, declaring the polarity
+        from the composed outcome (07 §3.1). The cited refs are the candidate basis; the
+        pipeline resolves them server-side. Empty for non-certification questions — a plain
+        answer carries no claims (the lightweight common case, never a ceremony)."""
+        status = _OUTCOME_TO_STATUS.get(outcome, "unknown")
+        low = question.lower()
+        claims: list[dict] = []
+        seen: set[str] = set()
+        for pattern, name in _CERT_SUBJECTS:
+            if pattern.search(low) and name not in seen:
+                seen.add(name)
+                claims.append(
+                    {
+                        "subject": name,
+                        "claim_type": "certification",
+                        "status": status,
+                        "basis": list(refs),
+                        "customer_shareable": True,
+                    }
+                )
+        return claims
 
     @staticmethod
     def _approved_polarity(doc: GroundingDoc) -> str | None:

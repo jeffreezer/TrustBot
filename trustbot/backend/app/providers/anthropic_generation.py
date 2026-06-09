@@ -91,6 +91,36 @@ _DRAFT_TOOL = {
                 "items": {"type": "string"},
                 "description": "The [ref] ids you actually relied on.",
             },
+            "claims": {
+                "type": "array",
+                "description": (
+                    "Structured claims this answer makes. For a CERTIFICATION question, emit "
+                    "one claim per certification named (e.g. SOC 2, ISO 27001, FedRAMP) with "
+                    "its status declared faithfully — a denial is status 'denied', NEVER an "
+                    "affirmation. Omit for answers that assert no certification. The system "
+                    "resolves each basis ref to a real owned record; do not invent refs."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "subject": {
+                            "type": "string",
+                            "description": "e.g. 'FedRAMP', 'SOC 2', 'ISO 27001'.",
+                        },
+                        "claim_type": {"type": "string", "enum": ["certification"]},
+                        "status": {
+                            "type": "string",
+                            "enum": ["affirmed", "qualified", "denied", "unknown"],
+                        },
+                        "basis": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "The [ref] ids that ground this claim.",
+                        },
+                    },
+                    "required": ["subject", "claim_type", "status"],
+                },
+            },
             "model_note": {
                 "type": "string",
                 "description": "If outcome is 'needs_input', a brief reason; otherwise empty.",

@@ -9,9 +9,9 @@ An evidence-backed AI responder for security questionnaires. TrustBot drafts ans
 
 The design goal is to never fabricate. A naive LLM that auto-fills a security questionnaire will confidently overclaim, which is the worst failure mode when the answers are compliance attestations a customer relies on. TrustBot grounds every answer in retrieved, approved evidence, checks it with deterministic validators, and requires a person to approve it before anything leaves the system.
 
-![The TrustBot review workspace](docs/workspace.png)
+![TrustBot review workspace demo](docs/demo.gif)
 
-*The three-pane review workspace: question list, evidence-cited draft with outcome and confidence, and the supporting evidence.*
+*Reviewing a security questionnaire: each answer carries an explicit outcome (attested / qualified / honest negative), a draft grounded in cited evidence, and anything unsupported is flagged for human review.*
 
 ## Highlights
 

@@ -36,19 +36,36 @@ ACCEPTABLE_BASIS_SOURCE_TYPES = CONTROLLING_SOURCE_TYPES | frozenset({"approved_
 
 _AFFIRMATIVE = frozenset({RespondOutcome.ATTESTED, RespondOutcome.QUALIFIED})
 
-# Canonical certification names + their recognizers. Two uses: (1) ``asserted_certifications``
-# scans emitted prose as a defense-in-depth backstop (the eval no_overclaim gate); (2)
-# ``normalize_cert`` maps a claim's free-text ``subject`` ("FedRAMP", "SOC2", "ISO/IEC 27001")
-# onto a canonical name so it can be compared against the org's held attestations.
+# The ISO/IEC 27000 family is open-ended (27001, 27017, 27018, 27701, 27036, …), so it is
+# matched generically — any 27xxx standard — rather than enumerated. This is what lets an
+# arbitrary org's ingested ISO certificate ground whatever extensions it actually lists, instead
+# of only the ones the demo happens to use (07 §5: no demo-fitting).
+_ISO_FAMILY_RE = re.compile(r"\biso\s*/?\s*(?:iec\s*)?(27\d{3})\b", re.IGNORECASE)
+
+# Non-ISO canonical certification names + their recognizers. Two uses: (1)
+# ``asserted_certifications`` scans emitted prose as a defense-in-depth backstop (the eval
+# no_overclaim gate); (2) ``normalize_cert`` maps a claim's free-text ``subject`` ("FedRAMP",
+# "SOC2", "ISO/IEC 27017") onto a canonical name so it matches the evidence-derived registry.
 _CERT_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"\bsoc\s*2\b", "soc 2"),
     (r"\bsoc\s*1\b", "soc 1"),
-    (r"\biso\s*/?\s*(?:iec\s*)?27001\b", "iso 27001"),
     (r"\bpci(?:\s*dss)?\b", "pci dss"),
     (r"\bfedramp\b", "fedramp"),
     (r"\bhipaa\b", "hipaa"),
     (r"\bfips\s*140\b", "fips 140"),
 )
+
+# document_kind → the recognizer for certifications THAT kind of attestation can attest. Used to
+# extract, at ingestion, which certifications a real ingested document actually names — anchored
+# by kind so a SOC 2 report that merely name-drops ISO doesn't "attest" ISO. This is the
+# evidence-first source of truth for "do we hold cert X" (07 §3.3/§5), never a self-declared
+# list. Deterministic for the structured seed attestations; for arbitrary real PDFs the general
+# path is model-assisted, human-confirmed extraction writing the SAME registry.
+_ATTESTATION_KIND_RECOGNIZER: dict[str, re.Pattern[str]] = {
+    "soc2_report": re.compile(r"\bsoc\s*[12]\b", re.IGNORECASE),
+    "iso_certificate": _ISO_FAMILY_RE,
+    "pci_aoc": re.compile(r"\bpci(?:\s*dss)?\b", re.IGNORECASE),
+}
 
 
 @dataclass(frozen=True)
@@ -63,7 +80,27 @@ class FindingStatus:
 
 def asserted_certifications(text: str) -> set[str]:
     low = (text or "").lower()
-    return {name for pattern, name in _CERT_PATTERNS if re.search(pattern, low)}
+    found = {name for pattern, name in _CERT_PATTERNS if re.search(pattern, low)}
+    found |= {f"iso {m.group(1)}" for m in _ISO_FAMILY_RE.finditer(low)}
+    return found
+
+
+def extract_attested_certifications(
+    text: str, document_kind: str | None
+) -> list[str]:
+    """The certifications an ingested attestation document actually attests — read from the
+    document's OWN text, anchored by its kind (07 §3.3/§5). This is the evidence-first source of
+    truth for "do we hold cert X", recorded on the evidence at ingestion; it is NEVER a
+    self-declared list, so removing the document from the corpus removes the cert from "held".
+
+    Deterministic for structured attestation docs (an ISO certificate/SoA listing 27001/27017/
+    27018/27701 yields all four; a SOC 2 report yields SOC 2; a PCI AoC yields PCI DSS). For
+    arbitrary real PDFs the general path is model-assisted, human-confirmed extraction that
+    writes the SAME registry. Returns normalized canonical names, deduped + sorted."""
+    recognizer = _ATTESTATION_KIND_RECOGNIZER.get(document_kind or "")
+    if recognizer is None:
+        return []
+    return sorted({normalize_cert(m.group(0)) for m in recognizer.finditer(text or "")})
 
 
 # --- downgrade gates (failure => needs_input) -------------------------------
@@ -130,10 +167,14 @@ def validate_citations(draft: AnswerDraft, grounding_refs: Sequence[str]) -> lis
 
 
 def normalize_cert(subject: str) -> str:
-    """Map a claim's free-text certification ``subject`` onto a canonical cert name (so
-    "FedRAMP" / "SOC2" / "ISO/IEC 27001" compare against the org's held attestations). Falls
-    back to a lowercased/whitespace-collapsed form when no canonical name matches."""
+    """Map a free-text certification ``subject`` onto a canonical name so claim subjects and the
+    evidence-derived registry compare equal. The ISO family is matched generically ("ISO/IEC
+    27017:2015" → "iso 27017"), so any 27xxx standard normalizes consistently; other certs use
+    the fixed recognizers; otherwise a lowercased/whitespace-collapsed fallback."""
     low = (subject or "").lower()
+    iso = _ISO_FAMILY_RE.search(low)
+    if iso:
+        return f"iso {iso.group(1)}"
     for pattern, name in _CERT_PATTERNS:
         if re.search(pattern, low):
             return name
@@ -268,6 +309,7 @@ __all__ = [
     "ACCEPTABLE_BASIS_SOURCE_TYPES",
     "FindingStatus",
     "asserted_certifications",
+    "extract_attested_certifications",
     "normalize_cert",
     "certification_claims",
     "acceptable_basis_gate",

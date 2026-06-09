@@ -73,17 +73,12 @@ from .validate import (
     acceptable_basis_gate,
     certification_claims,
     derive_cert_outcome,
+    normalize_cert,
     open_findings_gate,
     run_review_checks,
     validate_certification_claims,
 )
 
-# evidence_type → certification the org can therefore claim (attestation records).
-_ATTESTATION_CERTS = {
-    "soc2_report": "soc 2",
-    "iso_certificate": "iso 27001",
-    "pci_aoc": "pci dss",
-}
 # Cited source types that are themselves provide-able documents (Evidence rows).
 _DOCUMENT_SOURCE_TYPES = frozenset({"evidence", "policy"})
 # Question-text cues → the attestation document_kind the request names (05 §7).
@@ -154,13 +149,26 @@ def _grounding_from_retrieved(
 
 
 def _available_certs(session: Session, org_id: uuid.UUID) -> set[str]:
-    types = session.scalars(
-        select(Evidence.evidence_type)
-        .where(Evidence.org_id == org_id)
-        .where(Evidence.evidence_type.in_(_ATTESTATION_CERTS.keys()))
-        .distinct()
+    """Held certifications, DERIVED FROM EVIDENCE (07 §3.3/§5) — the overclaim guard's source of
+    truth. Returns the union of certifications that the org's INGESTED attestation documents
+    actually attest, recorded on each Evidence at ingestion (``extract_attested_certifications``).
+
+    Never a self-declared list: remove an attestation from the corpus and its certifications stop
+    being "held", so the answer changes (the decisive test). This is what makes the guard
+    generalize to any org's real ingested data instead of fitting the demo profile. All
+    normalized, so a held ISO extension (e.g. 27017) matches a claim subject regardless of
+    formatting; a cert no document attests is simply absent → an affirmation of it is an
+    overclaim."""
+    rows = session.scalars(
+        select(Evidence.attested_certifications).where(Evidence.org_id == org_id)
     ).all()
-    return {_ATTESTATION_CERTS[t] for t in types if t in _ATTESTATION_CERTS}
+    held: set[str] = set()
+    for certs in rows:
+        if isinstance(certs, list):
+            held.update(
+                normalize_cert(c) for c in certs if isinstance(c, str) and c.strip()
+            )
+    return held
 
 
 def _resolve_reused_approvals(

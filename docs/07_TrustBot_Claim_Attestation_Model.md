@@ -65,7 +65,7 @@ Deriving the outcome from declared claim status is what retires the classifier p
 ### 3.3 Validators on structure
 
 - **Anti-fabrication / acceptable basis:** every `affirmed`/`qualified` claim must cite ≥1 resolvable owned basis (policy / control / attestation / **prior approved answer**, per `05` §5.1), else → `needs_input`.
-- **Certification overclaim:** a `certification` claim with `status: affirmed` must have an attestation basis; a `status: denied` certification is **never** flagged. *(This is the FedRAMP fix, expressed structurally — and it handles mixed answers like "SOC 2 certified, not FedRAMP" per-claim.)*
+- **Certification overclaim:** a `certification` claim with `status: affirmed` must have an attestation basis; a `status: denied` certification is **never** flagged. The attestation basis must be a **real ingested attestation document that actually covers that certification** — discovered at ingestion (e.g. the ISO certificate/SoA covers ISO 27001 *and* 27017/27018/27701; a SOC 2 report covers SOC 2; absence of any attestation for SOC 1 → not held). It is **never** a self-declared certifications list. So "do we hold cert X" is answered by evidence the org actually ingested, which is what makes it generalize to any org and stay evidence-first. *(This is the FedRAMP fix, expressed structurally — and it handles mixed answers like "SOC 2 certified, not FedRAMP" per-claim.)*
 - **No internal-only content / no system-prompt leakage:** evaluated per claim and on the rendered prose.
 - **Open-finding-needs-a-date:** unchanged (uses the remediation/findings register from `05` §9).
 - **Prose ↔ claims consistency:** the rendered prose must not assert something the claims deny (or vice versa); divergence → flag for human review. This keeps the model from declaring one thing structurally and writing another.
@@ -88,6 +88,7 @@ Deriving the outcome from declared claim status is what retires the classifier p
 - **Deterministic enforcement.** Validators run on the structured claims with code, not model judgment; the model only *declares* claims.
 - **Two backstops against a mis-declared claim:** the prose↔claims consistency check, and human review before anything is external.
 - **The eval gate guards the migration.** Every phase must hold or improve faithfulness, overclaiming, and the injection adversarial suite — no regression ships.
+- **Evidence-grounded, never self-asserted — and no demo-fitting.** A claim's basis must always resolve to real, org-owned *evidence* (an ingested document, control, attestation, or prior approved answer), never to a hand-maintained list of assertions about the org. Every grounding mechanism must work for an **arbitrary org's real ingested data**, not just the Northwind seed — if a fix only works because of a value typed into the demo profile, it is wrong. Test this directly: removing the supporting evidence from the corpus must change the answer (e.g. remove the ISO certificate → ISO is no longer "held"). This is a standing principle for all future work, not just certifications.
 
 ---
 

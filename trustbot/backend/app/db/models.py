@@ -120,6 +120,12 @@ class Evidence(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # whitepaper | policy | document. Provision matches the requested kind — never a
     # whitepaper as a stand-in for an attestation.
     document_kind: Mapped[str | None] = mapped_column(String(32), index=True)
+    # Certifications THIS attestation document actually attests, extracted from its own text at
+    # ingestion (07 §3.3/§5 claim/attestation model). Normalized names, e.g. an ISO certificate/
+    # SoA → ["iso 27001","iso 27017","iso 27018","iso 27701"]. This is the evidence-derived source
+    # of truth for "do we hold cert X" — never a self-declared list — so a cert is "held" iff some
+    # ingested document attests it. Empty for non-attestation documents (policies, whitepapers).
+    attested_certifications: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     original_filename: Mapped[str] = mapped_column(String(512), nullable=False)
     # Opaque key/URL returned by the storage adapter (local path or s3://...).
     storage_path: Mapped[str] = mapped_column(String(1024), nullable=False)
